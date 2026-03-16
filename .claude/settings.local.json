@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(for dir:*)",
+      "Bash(do touch:*)",
+      "Bash(done)",
+      "Bash(xargs ls:*)",
+      "Bash(pip install:*)",
+      "Bash(python -c \"from tui.app import AVSAgentsApp; print\\(''OK''\\)\")",
+      "Bash(py -m pip show textual)",
+      "Bash(py --version)",
+      "Bash(py -m pip install -e .)",
+      "Bash(py -c \"from tui.app import AVSAgentsApp; print\\(''OK''\\)\")",
+      "Bash(py -c \"from textual.widgets._header import HeaderIcon; print\\(''found''\\)\")",
+      "Bash(py -c \"from tui.app import AVSAgentsApp; from providers.lmstudio import LMStudioProvider; print\\(''OK''\\)\")",
+      "Bash(py -c \"from tui.app import AVSAgentsApp; from core.topic_detector import TopicDetector, TopicVerdict; print\\(''OK''\\)\")",
+      "Bash(py -c \"from core.topic_detector import _extract_keywords; print\\(repr\\(_extract_keywords\\(''hablemos de River Plate''\\)\\)\\)\")",
+      "Bash(py -c \":*)",
+      "Bash(py -c \"from tui.app import AVSAgentsApp; from config.settings import load_settings; s = load_settings\\(\\); print\\(f''pricing: lmstudio={s.pricing.lmstudio}, openrouter={s.pricing.openrouter}''\\); print\\(''OK''\\)\")",
+      "Bash(py -c \"from memory.extractor import EntityExtractor; print\\(''OK''\\)\")",
+      "WebFetch(domain:lmstudio.ai)",
+      "Bash(find d:/Development/AVS-Agents -name \"__pycache__\" -type d -exec rm -rf {} +)",
+      "Bash(find d:/Development/AVS-Agents -name \"*.pyc\" -delete)"
+    ]
+  }
+}

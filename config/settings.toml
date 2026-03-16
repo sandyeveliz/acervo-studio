@@ -1,0 +1,41 @@
+[lmstudio]
+base_url = "http://localhost:1234/v1"
+model = "qwen/qwen3.5-9b"
+context_window = 32000
+kv_cache = true
+
+[lmstudio_utility]
+base_url = "http://localhost:1234/v1"
+model = "qwen2.5-3b-instruct"
+context_window = 32000
+kv_cache = false
+
+[ollama]
+base_url = "http://localhost:11434"
+embed_model = "qwen3-embedding"
+
+[context]
+hot_layer_max_messages = 5
+warm_layer_max_tokens = 800
+topic_change_embed_threshold = 0.65
+compaction_trigger_tokens = 2000
+
+[graph]
+persist_path = "data/graph"
+topics_path = "data/topics"
+sessions_path = "data/sessions"
+merge_similarity_threshold = 0.85
+
+[routing]
+max_local_latency_ms = 3000
+sensitive_data_local_only = true
+
+[pricing]
+lmstudio = 0.0
+ollama = 0.0
+openrouter = 0.000001
+anthropic = 0.000003
+
+[tui]
+refresh_rate = 10
+log_max_lines = 500
