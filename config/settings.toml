@@ -1,6 +1,6 @@
 [lmstudio]
 base_url = "http://localhost:1234/v1"
-model = "qwen/qwen3.5-9b"
+model = "unsloth/qwen3.5-9b"
 context_window = 32000
 kv_cache = true
 
@@ -15,7 +15,8 @@ base_url = "http://localhost:11434"
 embed_model = "qwen3-embedding"
 
 [context]
-hot_layer_max_messages = 5
+hot_layer_max_messages = 2
+hot_layer_max_tokens = 500
 warm_layer_max_tokens = 800
 topic_change_embed_threshold = 0.65
 compaction_trigger_tokens = 2000

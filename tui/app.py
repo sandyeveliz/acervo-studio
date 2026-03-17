@@ -14,28 +14,36 @@ from textual.widgets._header import HeaderIcon
 
 from config.settings import load_settings
 from core.event_bus import EventBus
+from core.context_index import ContextIndex
 from core.events import (
-    DebugInfo,
+    CompactionCompleted,
+    ConfirmationAccepted,
+    ConfirmationPending,
+    ContextBuilt,
+    ExecutorResult,
     ExtractionCompleted,
     ExtractionStarted,
+    FactFiltered,
     GraphUpdated,
     MessageReceived,
     PipelineError,
+    PlannerDecision,
     StreamChunkReceived,
     StreamCompleted,
     StreamStarted,
     TopicChanged,
     TopicDetectStep,
+    TrainingSampleSaved,
 )
 from core.pipeline import ConversationPipeline
 from core.topic_detector import TopicDetector
-from memory.extractor import EntityExtractor
+from memory.extractor import ConversationExtractor
 from memory.graph import TopicGraph
 from providers.base import ChatMessage
 from providers.model_router import ModelRouter
 from tui.widgets.chat_panel import ChatPanel
 from tui.widgets.log_stream import StatsPanel
-from tui.widgets.trace_panel import TracePanel
+# TracePanel kept for future debug mode but not mounted by default
 from utils.token_counter import count_tokens
 
 _AGENTS_DIR = Path(__file__).resolve().parent.parent / "config" / "agents"
@@ -52,9 +60,8 @@ class AVSAgentsApp(App):
     SUB_TITLE = "Chat — LM Studio"
 
     CSS = """
-    #top-row { height: 3fr; }
+    #main-row { height: 1fr; }
     #chat-panel { width: 1fr; }
-    #trace-panel { height: 1fr; min-height: 6; }
     #input { dock: bottom; margin: 0; }
     """
 
@@ -62,6 +69,7 @@ class AVSAgentsApp(App):
         Binding("ctrl+q", "quit", "Quit"),
         Binding("ctrl+c", "quit", "Quit"),
         Binding("ctrl+r", "reset", "Reset"),
+        Binding("ctrl+y", "copy_chat", "Copy chat"),
     ]
 
     def __init__(self) -> None:
@@ -72,14 +80,18 @@ class AVSAgentsApp(App):
         # Build pipeline components
         self._bus = EventBus()
         self._topic_detector = TopicDetector(self._router, self._settings.context)
-        self._extractor = EntityExtractor(self._router)
+        self._extractor = ConversationExtractor(self._router)
         self._graph = TopicGraph()
+        self._context_index = ContextIndex(
+            self._settings.context, self._graph, self._router,
+        )
         self._pipeline = ConversationPipeline(
             bus=self._bus,
             router=self._router,
             topic_detector=self._topic_detector,
             extractor=self._extractor,
             graph=self._graph,
+            context_index=self._context_index,
             model_name=self._settings.lmstudio.model,
         )
 
@@ -96,11 +108,9 @@ class AVSAgentsApp(App):
 
     def compose(self) -> ComposeResult:
         yield Header(icon="⟳")
-        with Vertical():
-            with Horizontal(id="top-row"):
-                yield ChatPanel(id="chat-panel")
-                yield StatsPanel()
-            yield TracePanel(id="trace-panel")
+        with Horizontal(id="main-row"):
+            yield ChatPanel(id="chat-panel")
+            yield StatsPanel()
         yield Input(placeholder="Escribí un mensaje... (Ctrl+Q para salir)", id="input")
         yield Footer()
 
@@ -115,57 +125,56 @@ class AVSAgentsApp(App):
         self._init_chat()
 
     def _subscribe_events(self) -> None:
-        """Subscribe to pipeline events. All handlers use call_later for thread safety."""
+        """Subscribe to pipeline events. Steps appear inline in the chat timeline."""
         bus = self._bus
-        trace = self.query_one("#trace-panel", TracePanel)
         stats = self.query_one(StatsPanel)
         chat = self.query_one("#chat-panel", ChatPanel)
 
-        # Step 1: Message received
-        bus.subscribe(MessageReceived, lambda e: self.call_later(
-            trace.add_step, "message_in",
-            f"[bold]Message received[/bold]  {e.msg_tokens} tk  ·  ctx {e.ctx_tokens:,} tk  ·  {e.history_len} msgs",
-        ))
-
         # Step 2: Topic detection
         def _on_topic_step(e: TopicDetectStep) -> None:
-            detail = f"[bold]Topic[/bold]  {e.verdict}  (L{e.level}, conf={e.confidence:.2f})"
-            if e.keyword:
-                detail += f"  keyword=\"{e.keyword}\""
-            if e.similarity is not None:
-                detail += f"  sim={e.similarity:.3f}"
-            if e.answer:
-                detail += f"  answer={e.answer}"
+            detail = f"Topic  {e.verdict}  (L{e.level}, conf={e.confidence:.2f})"
             if e.current_topic:
                 detail += f"  prev=\"{e.current_topic}\""
-            self.call_later(trace.add_step, "topic_detect", detail)
+            chat.add_step("topic_detect", detail)
 
         bus.subscribe(TopicDetectStep, _on_topic_step)
 
-        bus.subscribe(TopicChanged, lambda e: self.call_later(
-            trace.add_step, "topic_changed",
-            f"[bold]Topic set[/bold]  \"{e.new_topic}\"",
+        bus.subscribe(TopicChanged, lambda e: chat.add_step(
+            "topic_changed", f"Topic set  \"{e.new_topic}\"",
         ))
+
+        # Step 2.5: Planner
+        bus.subscribe(PlannerDecision, lambda e: chat.add_step(
+            "topic_detect",
+            f"Planner  {e.tool} · {e.entity}" + (f" · {e.query}" if e.query else ""),
+        ))
+
+        # Step 2.6: Executor
+        bus.subscribe(ExecutorResult, lambda e: chat.add_step(
+            "topic_detect",
+            f"Executor  {e.source} → {e.node_count} nodos · {e.fact_count} hechos",
+        ))
+
+        # Step 2.7: Context built
+        def _on_context_built(e: ContextBuilt) -> None:
+            warm = f"  warm=\"{e.warm_topic}\" {e.warm_tokens}tk" if e.warm_topic else ""
+            chat.add_step("topic_detect",
+                f"Context  hot={e.hot_messages}msgs {e.hot_tokens}tk{warm}  total={e.total_tokens}tk")
+            if e.context_summary:
+                chat.add_context_message(e.context_summary, e.total_tokens)
+
+        bus.subscribe(ContextBuilt, _on_context_built)
 
         # Step 3: Streaming
-        bus.subscribe(StreamStarted, lambda e: (
-            self.call_later(trace.add_step, "stream_start",
-                f"[bold]LLM stream[/bold]  model={e.model}  msgs={e.history_len}  temp={e.temperature}"),
-            self.call_later(self._on_stream_start),
-        ))
+        def _on_stream_started(e: StreamStarted) -> None:
+            chat.add_step("stream_start",
+                f"LLM stream  {e.provider}:{e.model}  msgs={e.history_len}")
+            self._on_stream_start()
 
-        bus.subscribe(StreamChunkReceived, lambda e: self.call_later(
-            self._on_stream_chunk, e.display_text,
-        ))
+        bus.subscribe(StreamStarted, _on_stream_started)
+        bus.subscribe(StreamChunkReceived, lambda e: self._on_stream_chunk(e.display_text))
 
         def _on_stream_complete(e: StreamCompleted) -> None:
-            detail = (
-                f"[bold]Response complete[/bold]  {e.completion_tokens} tk  ·  "
-                f"{e.latency_ms:,.0f}ms  ·  TTFT {e.ttft_ms:,.0f}ms  ·  {e.speed_tps:.1f} tk/s"
-            )
-            if e.think_tokens > 0:
-                detail += f"  ·  [dim]think={e.think_tokens} tk filtered[/dim]"
-            self.call_later(trace.add_step, "stream_end", detail)
             self.call_later(self._on_stream_complete, e)
 
         bus.subscribe(StreamCompleted, _on_stream_complete)
@@ -178,36 +187,55 @@ class AVSAgentsApp(App):
         def _on_extraction_done(e: ExtractionCompleted) -> None:
             entities = list(e.entities)
             if e.error:
-                self.call_later(trace.add_step, "error",
+                self.call_later(chat.add_step, "error",
                     f"[bold red]Extract failed[/bold red]  {e.error}")
             elif entities:
                 names = ", ".join(f"{n}({t})" for n, t in entities)
-                self.call_later(trace.add_step, "extract",
-                    f"[bold]Extract[/bold]  {len(entities)} entities: {names}")
+                self.call_later(chat.add_step, "extract",
+                    f"Extract  {len(entities)} entities: {names}")
             else:
-                self.call_later(trace.add_step, "extract",
-                    "[dim]Extract → no entities[/dim]")
+                self.call_later(chat.add_step, "extract",
+                    "Extract → no entities")
             self.call_later(stats.add_entities, entities)
 
         bus.subscribe(ExtractionCompleted, _on_extraction_done)
 
+        # Step 4.5: Fact filtering (only show in debug)
+        bus.subscribe(FactFiltered, lambda e: None)  # silent
+
         # Step 5: Graph
         bus.subscribe(GraphUpdated, lambda e: self.call_later(
-            trace.add_step, "graph",
-            f"[bold]Graph updated[/bold]  {e.node_count} nodos  {e.edge_count} aristas",
+            chat.add_step, "graph",
+            f"Graph updated  {e.node_count} nodos  {e.edge_count} aristas",
         ))
+
+        # Step 6: Confirmation
+        bus.subscribe(ConfirmationPending, lambda e: self.call_later(
+            chat.add_step, "topic_detect",
+            f"Confirmation pending  {e.entity}: {e.fact}",
+        ))
+        bus.subscribe(ConfirmationAccepted, lambda e: self.call_later(
+            chat.add_step, "graph",
+            f"[green]Confirmed → graph updated[/green]  {e.entity}: {e.fact}",
+        ))
+
+        # Step 7: Training capture (silent)
+        bus.subscribe(TrainingSampleSaved, lambda e: None)
+
+        # Step 3.5: Compaction (only show when it actually compacts)
+        def _on_compact(e: CompactionCompleted) -> None:
+            if e.compacted:
+                self.call_later(chat.add_step, "graph",
+                    f"Compacted  overflow={e.overflow_tokens} tk saved")
+
+        bus.subscribe(CompactionCompleted, _on_compact)
 
         # Errors
         bus.subscribe(PipelineError, lambda e: self.call_later(
-            trace.add_step, "error",
+            chat.add_step, "error",
             f"[bold red]{e.step} error[/bold red]  {e.error}",
         ))
 
-        # Debug
-        bus.subscribe(DebugInfo, lambda e: self.call_later(
-            trace.add_step, "topic_detect",
-            f"  [dim]{e.message}[/dim]",
-        ))
 
     # ── Stream UI helpers ──
 
@@ -279,6 +307,10 @@ class AVSAgentsApp(App):
         )
         if clean_text:
             self._history.append(ChatMessage(role="assistant", content=clean_text))
+            # If it's a confirmation response (not streamed), display it
+            if clean_text.startswith("Guardado:"):
+                chat = self.query_one("#chat-panel", ChatPanel)
+                self.call_later(chat.add_message, clean_text, "assistant")
 
     def action_reset(self) -> None:
         self._history = [
@@ -286,11 +318,21 @@ class AVSAgentsApp(App):
         ]
         self._topic_detector.current_topic = "none"
         self._stream_bubble = None
-        self.query_one("#chat-panel", ChatPanel).remove_children()
+        self.query_one("#chat-panel", ChatPanel).reset()
         self.query_one(StatsPanel).reset()
-        self.query_one("#trace-panel", TracePanel).reset()
         self._init_chat()
 
+    def action_copy_chat(self) -> None:
+        """Copy chat content to clipboard."""
+        chat = self.query_one("#chat-panel", ChatPanel)
+        text = chat.get_copyable_text()
+        if text:
+            self.copy_to_clipboard(text)
+            self.notify("Chat copied to clipboard", timeout=2)
+
     async def action_quit(self) -> None:
+        # Save session summary before closing
+        topic = self._topic_detector.current_topic
+        await self._pipeline.force_compact(self._history, topic)
         await self._router.close()
         self.exit()

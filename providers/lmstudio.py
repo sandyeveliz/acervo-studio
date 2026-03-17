@@ -67,12 +67,13 @@ class LMStudioProvider(ModelProvider):
         )
 
         log.info(
-            "chat  prompt=%d completion=%d total=%d latency=%.0fms model=%s",
+            "chat  prompt=%d completion=%d total=%d latency=%.0fms model=%s endpoint=%s",
             result.prompt_tokens,
             result.completion_tokens,
             result.total_tokens,
             result.latency_ms,
             result.model,
+            self._settings.base_url,
         )
 
         return result

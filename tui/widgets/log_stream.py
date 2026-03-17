@@ -159,9 +159,8 @@ class TopicsDisplay(Static):
         self._refresh()
 
     def add_entities(self, entities: list[tuple[str, str]]) -> None:
-        """Add entities as (name, type) pairs. Dedupes by name."""
-        for name, etype in entities:
-            self._entities[name] = etype
+        """Replace current entities with new ones from this turn."""
+        self._entities = {name: etype for name, etype in entities}
         self._extracting = False
         self._refresh()
 

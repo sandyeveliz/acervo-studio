@@ -78,17 +78,17 @@ _CHANGE_RE = re.compile(
 
 # --- Level 3: classification prompt (the ONLY LLM call in this module) ---
 
-_CLASSIFY_PROMPT = """Given the current topic and a new message, classify the relationship.
+_CLASSIFY_PROMPT = """Dado el topic actual y un nuevo mensaje, clasificá la relación.
 
-Current topic: {topic}
-New message: {message}
+Topic actual: {topic}
+Nuevo mensaje: {message}
 
-Answer ONLY with one letter:
-a) Same topic — the message continues the current conversation
-b) Sub-topic — the message is a related but distinct aspect
-c) Different topic — the message is about something else
+Respondé SOLO con una letra:
+a) Mismo tema
+b) Sub-tema nuevo
+c) Tema diferente
 
-Answer:"""
+Respuesta:"""
 
 # --- Stopwords for keyword extraction (no LLM needed) ---
 
@@ -146,12 +146,13 @@ class TopicDetector:
         self._current_topic_embedding = None
 
     async def extract_topic_label(self, message: str) -> str:
-        """Extract a topic label without calling the LLM.
+        """Extract a topic label.
 
         Strategy:
         1. If there are known topics, embed the message and compare against
            all known topic embeddings. Return the closest if above threshold.
-        2. Otherwise, extract 2-3 keywords by filtering stopwords.
+        2. Otherwise, use the utility model to extract a 2-5 word label.
+        3. Fallback: keyword extraction (no LLM, no network).
         """
         clean = strip_think_blocks(message)
 
@@ -168,18 +169,46 @@ class TopicDetector:
                     str(e)[:60].replace(" ", "_"),
                 )
 
-        # Strategy 2: extract keywords (no LLM, no network)
+        # Strategy 2: use utility model for consistent labeling
+        try:
+            label = await self._extract_label_via_llm(clean)
+            if label:
+                log.info("topic_extract method=llm_utility label=\"%s\"", label)
+                try:
+                    resp = await self._router.embed(label)
+                    self._known_topics.append(_KnownTopic(label=label, embedding=resp.embedding))
+                except Exception:
+                    pass
+                return label
+        except Exception as e:
+            log.info("topic_extract method=llm_utility failed=%s", str(e)[:60])
+
+        # Strategy 3: fallback to keyword extraction
         label = _extract_keywords(clean)
         log.info("topic_extract method=keywords label=\"%s\"", label)
-
-        # Cache this new topic's embedding for future comparisons
-        try:
-            resp = await self._router.embed(label)
-            self._known_topics.append(_KnownTopic(label=label, embedding=resp.embedding))
-        except Exception:
-            pass  # Embedding unavailable, still return the label
-
         return label
+
+    async def _extract_label_via_llm(self, message: str) -> str:
+        """Use the utility model to extract a topic label in 2-5 words."""
+        from providers.base import ChatMessage as CM
+        import re as _re
+
+        prompt = (
+            "Extraé el tema principal de este mensaje en 2-5 palabras en español. "
+            "Respondé SOLO con el nombre del tema, nada más.\n\n"
+            f"Mensaje: {message[:300]}\n\nTema:"
+        )
+        response = await self._router.chat_utility(
+            [CM(role="user", content=prompt)],
+            temperature=0.0,
+            max_tokens=20,
+        )
+        raw = strip_think_blocks(response.content).strip()
+        raw = _re.sub(r"```(?:json)?\s*", "", raw).strip()
+        label = raw.strip('"').strip("'").strip()
+        # Remove any non-Latin characters (Chinese, etc.) that Qwen sometimes produces
+        label = _re.sub(r"[^\w\s\-áéíóúñüÁÉÍÓÚÑÜ]", "", label).strip()
+        return label if label and len(label) < 60 else ""
 
     async def _match_known_topic(self, message: str) -> str | None:
         """Compare message embedding against all known topics."""

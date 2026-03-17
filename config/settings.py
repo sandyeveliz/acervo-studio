@@ -35,7 +35,8 @@ class OllamaSettings:
 
 @dataclass(frozen=True)
 class ContextSettings:
-    hot_layer_max_messages: int = 5
+    hot_layer_max_messages: int = 2
+    hot_layer_max_tokens: int = 500
     warm_layer_max_tokens: int = 800
     topic_change_embed_threshold: float = 0.65
     compaction_trigger_tokens: int = 2000

@@ -66,3 +66,12 @@ class TracePanel(VerticalScroll):
             if first:
                 first.remove()
                 self._step_count -= 1
+
+    def get_copyable_text(self) -> str:
+        """Get all trace steps as plain text for clipboard."""
+        from rich.text import Text
+        lines: list[str] = []
+        for step in self.query(TraceStep):
+            r = step.render()
+            lines.append(r.plain if isinstance(r, Text) else str(r))
+        return "\n".join(lines)

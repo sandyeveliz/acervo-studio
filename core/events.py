@@ -44,11 +44,60 @@ class TopicChanged(PipelineEvent):
     previous_topic: str = ""
 
 
+# ── Step 2.5: Pre-LLM routing ──
+
+@dataclass(frozen=True)
+class RouterDecision(PipelineEvent):
+    route: str = "static"  # "static", "memory", "search", "ask"
+    reason: str = ""
+
+
+# ── Step 2.5: Query Planner ──
+
+@dataclass(frozen=True)
+class PlannerDecision(PipelineEvent):
+    tool: str = ""  # GRAPH_ALL, GRAPH_SEARCH, VECTOR_SEARCH, WEB_SEARCH, READY
+    entity: str = ""
+    query: str = ""
+
+
+# ── Step 2.6: Executor ──
+
+@dataclass(frozen=True)
+class ExecutorResult(PipelineEvent):
+    source: str = ""  # graph, vector, web, empty, ready
+    node_count: int = 0
+    fact_count: int = 0
+
+
+# ── Step 2.6 (legacy): Synthesizer ──
+
+@dataclass(frozen=True)
+class SynthesizerOutput(PipelineEvent):
+    hot_nodes: int = 0
+    warm_nodes: int = 0
+    output_tokens: int = 0
+
+
+# ── Step 2.7: Context stack built ──
+
+@dataclass(frozen=True)
+class ContextBuilt(PipelineEvent):
+    hot_messages: int = 0
+    hot_tokens: int = 0
+    warm_topic: str = ""
+    warm_tokens: int = 0
+    total_tokens: int = 0
+    context_summary: str = ""  # human-readable summary of what's in the stack
+
+
 # ── Step 3: LLM streaming ──
 
 @dataclass(frozen=True)
 class StreamStarted(PipelineEvent):
     model: str = ""
+    provider: str = ""   # "lmstudio", "openrouter", etc.
+    endpoint: str = ""   # "http://localhost:1234/v1"
     history_len: int = 0
     temperature: float = 0.7
 
@@ -82,6 +131,23 @@ class ExtractionCompleted(PipelineEvent):
     error: str | None = None
 
 
+# ── Step 4.5: Fact filtering ──
+
+@dataclass(frozen=True)
+class FactFiltered(PipelineEvent):
+    entity: str = ""
+    fact: str = ""
+    reason: str = ""  # "assistant_speaker" | "duplicate"
+
+
+# ── Step 3.5: Compaction ──
+
+@dataclass(frozen=True)
+class CompactionCompleted(PipelineEvent):
+    compacted: bool = False
+    overflow_tokens: int = 0
+
+
 # ── Step 5: Graph persistence ──
 
 @dataclass(frozen=True)
@@ -95,6 +161,27 @@ class GraphUpdated(PipelineEvent):
 @dataclass(frozen=True)
 class DebugInfo(PipelineEvent):
     message: str = ""
+
+
+# ── Confirmation ──
+
+@dataclass(frozen=True)
+class ConfirmationPending(PipelineEvent):
+    entity: str = ""
+    fact: str = ""
+
+@dataclass(frozen=True)
+class ConfirmationAccepted(PipelineEvent):
+    entity: str = ""
+    fact: str = ""
+
+
+# ── Training ──
+
+@dataclass(frozen=True)
+class TrainingSampleSaved(PipelineEvent):
+    sample_type: str = ""  # correction | confirmation | rejection
+    entity: str = ""
 
 
 # ── Errors ──

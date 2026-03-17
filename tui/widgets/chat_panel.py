@@ -1,11 +1,23 @@
-"""Chat message display widget."""
+"""Chat panel with unified timeline — messages + pipeline steps inline."""
 
 from __future__ import annotations
 
 from textual.containers import VerticalScroll
-from textual.widgets import Static
+from textual.widgets import Collapsible, Static
 
 from utils.token_counter import count_tokens
+
+
+_ICONS: dict[str, str] = {
+    "message_in": "→",
+    "topic_detect": "◈",
+    "topic_changed": "◈",
+    "stream_start": "◇",
+    "stream_end": "◆",
+    "extract": "⬡",
+    "graph": "►",
+    "error": "✗",
+}
 
 
 class MessageBubble(Static):
@@ -44,13 +56,33 @@ class MessageBubble(Static):
         self._role = role
 
 
+class TimelineStep(Static):
+    """Compact pipeline step shown inline in the chat timeline."""
+
+    DEFAULT_CSS = """
+    TimelineStep {
+        width: 100%;
+        padding: 0 2;
+        height: auto;
+    }
+    """
+
+
 class ChatPanel(VerticalScroll):
-    """Scrollable panel that displays conversation messages."""
+    """Scrollable panel with unified timeline: messages + pipeline steps."""
 
     DEFAULT_CSS = """
     ChatPanel {
         height: 1fr;
         padding: 1;
+    }
+    Collapsible {
+        margin: 0 0 1 0;
+        padding: 0;
+        border-left: thick $accent;
+    }
+    Collapsible Static {
+        padding: 0 1;
     }
     """
 
@@ -59,13 +91,11 @@ class ChatPanel(VerticalScroll):
         self._context_tokens: int = 0
 
     def set_initial_tokens(self, tokens: int) -> None:
-        """Set the initial context size (system prompt tokens)."""
         self._context_tokens = tokens
 
     def add_message(
         self, content: str, role: str = "assistant", extra_line: str = ""
     ) -> MessageBubble:
-        """Add a complete message with token stats."""
         msg_tokens = count_tokens(content)
         self._context_tokens += msg_tokens
 
@@ -79,22 +109,34 @@ class ChatPanel(VerticalScroll):
         self.scroll_end(animate=False)
         return bubble
 
+    def add_step(self, step_type: str, detail: str) -> None:
+        """Add a pipeline step inline in the timeline."""
+        icon = _ICONS.get(step_type, "·")
+        step = TimelineStep(f"[dim]{icon}  {detail}[/dim]")
+        self.mount(step)
+        self.scroll_end(animate=False)
+
+    def add_context_message(self, context_summary: str, total_tokens: int) -> None:
+        """Add a collapsible context stack display."""
+        title = f"CTX: {total_tokens} tk sent to LLM (click to expand)"
+        collapsible = Collapsible(
+            Static(f"[dim]{context_summary}[/dim]"),
+            title=title,
+            collapsed=True,
+        )
+        self.mount(collapsible)
+        self.scroll_end(animate=False)
+
     def add_streaming_message(self) -> MessageBubble:
-        """Add an empty assistant message that will be updated via streaming."""
         bubble = MessageBubble("[bold]AI:[/bold] ▍", role="assistant")
         self.mount(bubble)
         self.scroll_end(animate=False)
         return bubble
 
     def finalize_streaming(
-        self,
-        bubble: MessageBubble,
-        full_text: str,
-        latency_ms: float,
-        ttft_ms: float,
-        chunk_count: int,
+        self, bubble: MessageBubble, full_text: str,
+        latency_ms: float, ttft_ms: float, chunk_count: int,
     ) -> None:
-        """Finalize a streaming message with final text and stats."""
         msg_tokens = count_tokens(full_text)
         self._context_tokens += msg_tokens
 
@@ -104,6 +146,27 @@ class ChatPanel(VerticalScroll):
         self.scroll_end(animate=False)
 
     def update_streaming(self, bubble: MessageBubble, full_text: str) -> None:
-        """Update a streaming message bubble with accumulated text."""
         bubble.update(f"[bold]AI:[/bold] {full_text}▍")
         self.scroll_end(animate=False)
+
+    def reset(self) -> None:
+        """Clear all messages and steps."""
+        self.remove_children()
+        self._context_tokens = 0
+
+    def get_copyable_text(self) -> str:
+        """Get all timeline content as plain text for clipboard."""
+        from rich.text import Text
+        lines: list[str] = []
+        for child in self.children:
+            if isinstance(child, (MessageBubble, TimelineStep)):
+                r = child.render()
+                lines.append(r.plain if isinstance(r, Text) else str(r))
+            elif isinstance(child, Collapsible):
+                title = getattr(child, 'title', 'CTX')
+                inner_parts: list[str] = []
+                for sub in child.query(Static):
+                    r = sub.render()
+                    inner_parts.append(r.plain if isinstance(r, Text) else str(r))
+                lines.append(f"▼ {title}\n{''.join(inner_parts)}")
+        return "\n\n".join(lines)
