@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"from mcp import ClientSession; print\\(''ClientSession imported successfully''\\)\")",
+      "Bash(python -c \"from mcp.client.stdio import stdio_client; print\\(''stdio_client imported successfully''\\)\")",
+      "Read(//c/Users/sandy/AppData/Local/Programs/Python/Python312/Lib/site-packages/mcp/**)",
+      "Read(//c/Users/sandy/AppData/Local/Programs/Python/Python312/Lib/site-packages/mcp/client/**)",
+      "Bash(python -c \"from mcp.client import ClientSession, stdio_client; print\\(''Imports successful''\\)\")",
+      "Bash(python -c \"from mcp.client.session import ClientSession; from mcp.client.stdio import stdio_client; print\\(''Imports successful''\\)\")",
+      "Bash(python:*)",
+      "Bash(npx --version)",
+      "Bash(npx -y @brave/brave-search-mcp-server --help)",
+      "Bash(taskkill /F /IM npx.exe)",
+      "Bash(taskkill /F /IM node.exe)",
+      "Bash(grep -E \"^d|\\\\.py$\")",
+      "Bash(grep -n 'class Acervo' /d/Development/acervo/*.py)",
+      "Bash(grep -r \"ConversationExtractor\\\\|SearchExtractor\" /d/Development/AVS-Agents --include=*.py)",
+      "Bash(xargs grep:*)",
+      "Skill(commit-commands:commit)",
+      "Skill(commit-commands:commit:*)",
+      "Bash(git rm:*)"
+    ]
+  }
+}
