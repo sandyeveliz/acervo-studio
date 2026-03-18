@@ -17,28 +17,34 @@ from utils.text import strip_think_blocks
 
 log = logging.getLogger(__name__)
 
-_PLANNER_PROMPT = """Sos un planificador de búsqueda. Analizá la pregunta y decidí qué información necesitás.
+_PLANNER_PROMPT = """Sos un planificador de búsqueda. Analizá la pregunta y decidí qué herramienta usar.
 
 Pregunta: {user_message}
 Entidad principal: {entity_name} ({entity_type})
 Hechos disponibles: {facts_summary}
 
-Herramientas disponibles:
-- GRAPH_ALL: traer todos los hechos y conexiones de una entidad
-- GRAPH_SEARCH: buscar nodos por tipo dentro de una entidad (tipos: lugar, persona, entidad, actividad, evento)
-- VECTOR_SEARCH: búsqueda semántica cuando no sabés el tipo exacto
-- WEB_SEARCH: para datos que cambian (resultados, precios, noticias, fechas futuras)
-- READY: tenés suficiente información para responder sin buscar más
+Herramientas:
+- GRAPH_ALL: traer todos los hechos y conexiones de una entidad del grafo local
+- GRAPH_SEARCH: buscar nodos relacionados por tipo o keyword
+- WEB_SEARCH: buscar en internet
+- READY: no necesita buscar nada
 
-Respondé SOLO con un JSON en una línea, sin explicación:
-{{"tool": "NOMBRE", "entity": "nombre_entidad", "query": "texto de búsqueda o filtro"}}
+REGLAS DE PRIORIDAD (seguir en orden):
+1. Si "Hechos disponibles" tiene datos sobre la entidad → usá GRAPH_ALL
+2. Si el usuario dice "buscá", "googleá", "internet" → usá WEB_SEARCH
+3. Si no hay hechos disponibles y el usuario pregunta sobre algo → usá WEB_SEARCH
+4. Si es saludo o pregunta sin tema ("hola", "cómo estás") → usá READY
+
+Respondé SOLO con un JSON, sin explicación:
+{{"tool": "NOMBRE", "entity": "nombre_entidad", "query": "texto de búsqueda"}}
 
 Ejemplos:
-- "qué sabés de Cipolletti?" → {{"tool": "GRAPH_ALL", "entity": "Cipolletti", "query": ""}}
-- "qué fiestas hay en Cipolletti?" → {{"tool": "GRAPH_SEARCH", "entity": "Cipolletti", "query": "actividad|evento|fiesta"}}
-- "cuándo es el próximo partido?" → {{"tool": "WEB_SEARCH", "entity": "Club Cipolletti", "query": "próximo partido Club Cipolletti"}}
-- pregunta sin tema específico ("hola", "cómo estás") → {{"tool": "READY", "entity": "", "query": ""}}
-Responder siempre en español. JSON:"""
+- "qué sabés de Batman?" (hechos: "es un superhéroe de DC") → {{"tool": "GRAPH_ALL", "entity": "Batman", "query": ""}}
+- "qué sabés de Cipolletti?" (hechos: "Sandy vive en Cipolletti") → {{"tool": "GRAPH_ALL", "entity": "Cipolletti", "query": ""}}
+- "qué es X?" (hechos: ninguno) → {{"tool": "WEB_SEARCH", "entity": "X", "query": "X"}}
+- "buscá en internet sobre X" → {{"tool": "WEB_SEARCH", "entity": "X", "query": "X"}}
+- "hola" → {{"tool": "READY", "entity": "", "query": ""}}
+JSON:"""
 
 
 @dataclass

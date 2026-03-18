@@ -61,13 +61,24 @@ class PlannerDecision(PipelineEvent):
     query: str = ""
 
 
+# ── Step 2.5b: Acervo decision ──
+
+@dataclass(frozen=True)
+class AcervoDecision(PipelineEvent):
+    has_context: bool = False    # graph had relevant data
+    needs_tool: bool = False     # planner wants external tool
+    action: str = ""             # "graph", "search", "ask_user", "no_data"
+
+
 # ── Step 2.6: Executor ──
 
 @dataclass(frozen=True)
 class ExecutorResult(PipelineEvent):
-    source: str = ""  # graph, vector, web, empty, ready
+    source: str = ""  # graph, vector, web, empty, ready, error
     node_count: int = 0
     fact_count: int = 0
+    content_preview: str = ""  # first N chars of content for display
+    error_msg: str = ""
 
 
 # ── Step 2.6 (legacy): Synthesizer ──

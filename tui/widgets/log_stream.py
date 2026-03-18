@@ -119,18 +119,33 @@ class StatsDisplay(Static):
         self.update("\n".join(lines))
 
 
-# --- Entity type icons ---
+# --- Entity type icons (ontology types, capitalized) ---
 
 _TYPE_ICONS: dict[str, str] = {
+    "Persona": "👤",
+    "Lugar": "📍",
+    "Organización": "🏢",
+    "Proyecto": "📦",
+    "Tecnología": "⚙",
+    "Documento": "📄",
+    "Regla": "📏",
+    "Unknown": "❓",
+    # Legacy lowercase (kept for backward compat)
     "lugar": "📍",
     "persona": "👤",
     "entidad": "🏢",
     "actividad": "⚽",
 }
 
+_STATUS_ICONS: dict[str, str] = {
+    "hot": "🔴",
+    "warm": "🟡",
+    "cold": "🟢",
+}
+
 
 class TopicsDisplay(Static):
-    """Lower half — active entity tags extracted from the conversation."""
+    """Lower half — graph node status and active entities."""
 
     DEFAULT_CSS = """
     TopicsDisplay {
@@ -143,14 +158,13 @@ class TopicsDisplay(Static):
 
     def __init__(self) -> None:
         super().__init__("")
-        # {name: type} — deduped by name
-        self._entities: dict[str, str] = {}
         self._extracting: bool = False
+        self._graph = None
         self._refresh()
 
     def reset(self) -> None:
-        self._entities = {}
         self._extracting = False
+        self._graph = None
         self._refresh()
 
     def set_extracting(self, extracting: bool) -> None:
@@ -159,37 +173,111 @@ class TopicsDisplay(Static):
         self._refresh()
 
     def add_entities(self, entities: list[tuple[str, str]]) -> None:
-        """Replace current entities with new ones from this turn."""
-        self._entities = {name: etype for name, etype in entities}
+        """Called after extraction — refresh display from graph."""
         self._extracting = False
         self._refresh()
 
+    def update_graph_status(self, graph) -> None:
+        """Update display from graph state after each turn."""
+        self._graph = graph
+        self._refresh()
+
     def _refresh(self) -> None:
-        lines = ["[bold]Active topics[/bold]"]
+        lines = ["[bold]Graph[/bold]"]
 
         if self._extracting:
-            lines.append("  ⏳ procesando...")
+            lines.append("  ⏳ extracting...")
 
-        if self._entities:
-            # Group by type for clean display
-            by_type: dict[str, list[str]] = {}
-            for name, etype in self._entities.items():
-                by_type.setdefault(etype, []).append(name)
+        if not self._graph:
+            if not self._extracting:
+                lines.append("  [dim]no entities yet[/dim]")
+            self.update("\n".join(lines))
+            return
 
-            for etype in ("persona", "lugar", "entidad", "actividad"):
-                names = by_type.get(etype, [])
-                if names:
-                    icon = _TYPE_ICONS.get(etype, "·")
-                    for name in names:
-                        lines.append(f"  {icon} {name}")
-        elif not self._extracting:
-            lines.append("  [dim]sin entidades[/dim]")
+        # Summary line
+        lines.append(
+            f"  {self._graph.node_count} nodes · {self._graph.edge_count} edges"
+        )
+        lines.append("")
+
+        # Group nodes by status
+        for status, status_icon in _STATUS_ICONS.items():
+            nodes = self._graph.get_nodes_by_status(status)
+            if not nodes:
+                continue
+            lines.append(f"  {status_icon} [bold]{status.capitalize()}[/bold]")
+            for node in nodes:
+                label = node.get("label", "?")
+                ntype = node.get("type", "?")
+                icon = _TYPE_ICONS.get(ntype, "·")
+                layer = node.get("layer", "")
+                layer_tag = " [dim]U[/dim]" if layer == "UNIVERSAL" else ""
+                lines.append(f"    {icon} {label}{layer_tag}")
+
+        # Show inactive nodes count
+        all_nodes = self._graph.get_all_nodes()
+        active_count = sum(
+            1 for n in all_nodes if n.get("status") in ("hot", "warm", "cold")
+        )
+        inactive = len(all_nodes) - active_count
+        if inactive > 0:
+            lines.append(f"\n  [dim]{inactive} other nodes[/dim]")
+
+        self.update("\n".join(lines))
+
+
+_MCP_STATUS_ICONS: dict[str, str] = {
+    "ready": "[green]●[/green]",
+    "error": "[red]●[/red]",
+    "unknown": "[yellow]●[/yellow]",
+}
+
+
+class MCPStatusDisplay(Static):
+    """MCP server status display."""
+
+    DEFAULT_CSS = """
+    MCPStatusDisplay {
+        width: 100%;
+        height: auto;
+        padding: 1;
+        border-top: tall $primary-background;
+    }
+    """
+
+    def __init__(self) -> None:
+        super().__init__("")
+        self._mcp = None
+        self._refresh()
+
+    def set_mcp(self, mcp) -> None:
+        self._mcp = mcp
+        self._refresh()
+
+    def refresh_status(self) -> None:
+        self._refresh()
+
+    def _refresh(self) -> None:
+        lines = ["[bold]MCP Servers[/bold]"]
+
+        if not self._mcp or not self._mcp.has_servers:
+            lines.append("  [dim]no servers configured[/dim]")
+            self.update("\n".join(lines))
+            return
+
+        for name in self._mcp.server_names:
+            status = self._mcp.get_status(name)
+            icon = _MCP_STATUS_ICONS.get(status, "○")
+            lines.append(f"  {icon} {name}")
+            error = self._mcp.get_error(name)
+            if error:
+                lines.append(f"    [dim red]{error[:40]}[/dim red]")
 
         self.update("\n".join(lines))
 
 
 class StatsPanel(Vertical):
-    """Sidebar container: stats on top, entity tags on bottom."""
+    """Sidebar container: stats on top, entity tags + MCP status on bottom."""
 
     DEFAULT_CSS = """
     StatsPanel {
@@ -203,6 +291,7 @@ class StatsPanel(Vertical):
     def compose(self):
         yield StatsDisplay()
         yield TopicsDisplay()
+        yield MCPStatusDisplay()
 
     def reset(self) -> None:
         self.query_one(StatsDisplay).reset()
@@ -233,3 +322,12 @@ class StatsPanel(Vertical):
 
     def add_entities(self, entities: list[tuple[str, str]]) -> None:
         self.query_one(TopicsDisplay).add_entities(entities)
+
+    def update_graph_status(self, graph) -> None:
+        self.query_one(TopicsDisplay).update_graph_status(graph)
+
+    def set_mcp(self, mcp) -> None:
+        self.query_one(MCPStatusDisplay).set_mcp(mcp)
+
+    def refresh_mcp_status(self) -> None:
+        self.query_one(MCPStatusDisplay).refresh_status()

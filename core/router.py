@@ -15,7 +15,7 @@ import re
 from dataclasses import dataclass
 from enum import Enum
 
-from memory.graph import TopicGraph, _make_id
+from acervo.graph import TopicGraph, _make_id
 
 
 class Route(Enum):
@@ -39,17 +39,16 @@ def decide_route(user_msg: str, current_topic: str, graph: TopicGraph) -> tuple[
     """
     if current_topic != "none":
         topic_id = _make_id(current_topic)
-        node = graph._nodes.get(topic_id)
+        node = graph.get_node(topic_id)
 
         # Topic exists with verified facts → use memory
         if node and node.get("facts"):
             return Route.MEMORY, f"topic '{current_topic}' has {len(node['facts'])} facts"
 
         # Check if any active nodes have facts
-        active_nodes = [
-            n for n in graph._nodes.values()
-            if n.get("status") in ("hot", "warm") and n.get("facts")
-        ]
+        hot_nodes = graph.get_nodes_by_status("hot")
+        warm_nodes = graph.get_nodes_by_status("warm")
+        active_nodes = [n for n in hot_nodes + warm_nodes if n.get("facts")]
         if active_nodes:
             return Route.MEMORY, f"{len(active_nodes)} active nodes with facts"
 

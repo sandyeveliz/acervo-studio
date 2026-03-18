@@ -21,7 +21,17 @@ dependencies = [
     "httpx>=0.27",
     "python-dotenv>=1.0.0",
     "tiktoken>=0.7.0",
+    "acervo",
 ]
 
 [tool.setuptools.packages.find]
-include = ["config*", "core*", "memory*", "providers*", "rag*", "skills*", "protocols*", "tui*"]
+include = ["config*", "core*", "providers*", "rag*", "skills*", "protocols*", "tui*"]
+
+[tool.setuptools]
+py-modules = []
+
+[project.optional-dependencies]
+dev = []
+
+[tool.uv.sources]
+acervo = { path = "../acervo", editable = true }

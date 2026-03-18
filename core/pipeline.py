@@ -1,22 +1,21 @@
 """Conversation pipeline — orchestrates the full turn sequence.
 
-Full flow matching architecture diagram:
-  receive → detect topic → route → synthesize → build context → stream LLM
-  → compact → extract → persist graph
+Uses Acervo as context proxy:
+  acervo.prepare() → builds context from graph
+  CLIENT streams LLM + handles MCP tools
+  acervo.process() → extracts facts, persists to graph
 
 Emits typed events at every step for full trace visibility.
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
 import time
 
-from core.context_index import ContextIndex
-from core.context_synthesizer import synthesize
 from core.event_bus import EventBus
 from core.events import (
+    AcervoDecision,
     CompactionCompleted,
     ConfirmationAccepted,
     ConfirmationPending,
@@ -37,19 +36,20 @@ from core.events import (
     TrainingSampleSaved,
 )
 from core.training_capture import save_sample
-from core.query_planner import QueryPlanner
-from core.executor import PlanExecutor
-from core.topic_detector import TopicDetector, TopicVerdict
-from memory.extractor import ConversationExtractor, ExtractionResult
-from memory.graph import TopicGraph
+from acervo import Acervo, TopicVerdict
+from acervo.graph import _make_id
+from acervo.token_counter import count_tokens
+from acervo._text import strip_think_blocks
 from providers.base import ChatMessage
 from providers.model_router import ModelRouter
-from utils.text import strip_think_blocks
-from utils.token_counter import count_tokens
 
 
 class ConversationPipeline:
-    """Orchestrates the full conversation turn. Communicates via EventBus."""
+    """Orchestrates the full conversation turn.
+
+    Delegates context building and extraction to Acervo.
+    Owns: LLM streaming, MCP tool execution, confirmation logic, event emission.
+    """
 
     _CONFIRM_WORDS = frozenset({
         "sí", "si", "correcto", "dale", "ok", "claro", "yes",
@@ -61,23 +61,19 @@ class ConversationPipeline:
         self,
         bus: EventBus,
         router: ModelRouter,
-        topic_detector: TopicDetector,
-        extractor: ConversationExtractor,
-        graph: TopicGraph,
-        context_index: ContextIndex,
+        memory: Acervo,
         model_name: str = "",
+        mcp=None,
     ) -> None:
         self._bus = bus
         self._router = router
-        self._topic_detector = topic_detector
-        self._extractor = extractor
-        self._graph = graph
-        self._context_index = context_index
+        self._memory = memory
+        self._graph = memory.graph
         self._model_name = model_name
-        self._planner = QueryPlanner(router)
-        self._executor = PlanExecutor(graph)
-        self._pending_confirmation: dict | None = None  # {entity, fact}
-        # State for training data capture
+        self._mcp = mcp
+        self._pending_confirmation: dict | None = None
+        self._pending_search: str = ""  # entity to search when user confirms
+        self._search_authorized: bool = False  # user already said "si" to search
         self._last_context_payload: str = ""
         self._last_model_response: str = ""
         self._last_user_message: str = ""
@@ -88,16 +84,13 @@ class ConversationPipeline:
         history: list[ChatMessage],
         temperature: float = 0.7,
     ) -> str | None:
-        """Execute full pipeline. Returns clean assistant response text, or None if handled internally."""
+        """Execute full pipeline. Returns clean assistant response text."""
 
         # ── Step 0: Check pending confirmation ──
         if self._pending_confirmation:
             result = await self._check_confirmation(user_text)
             if result is not None:
                 return result
-
-        # Cycle graph status: hot→warm→cold
-        self._graph.cycle_status()
 
         # ── Step 1: Message received ──
         msg_tokens = count_tokens(user_text)
@@ -109,164 +102,188 @@ class ConversationPipeline:
             history_len=len(history),
         ))
 
-        # ── Step 2: Topic detection ──
-        await self._step_topic_detect(user_text)
+        # ── Step 2: Acervo prepares context (topic detect + plan + build) ──
+        history_dicts = [{"role": m.role, "content": m.content} for m in history]
+        prep = await self._memory.prepare(user_text, history_dicts)
 
-        # ── Step 2.3: Activate graph nodes mentioned in user message ──
-        self._activate_mentioned_nodes(user_text)
+        # Emit topic events
+        topic_detector = self._memory.topic_detector
+        await self._bus.emit(TopicDetectStep(
+            level=0, verdict="set", confidence=1.0,
+            current_topic=prep.topic,
+        ))
 
-        # ── Step 2.4: Keep current topic node hot while topic unchanged ──
-        current_topic = self._topic_detector.current_topic
-        if current_topic != "none":
-            from memory.graph import _make_id
-            topic_id = _make_id(current_topic)
-            if topic_id in self._graph._nodes:
-                self._graph._nodes[topic_id]["status"] = "hot"
-
-        # ── Step 2.5: Query Planner (LLM decides what to search) ──
-        from memory.graph import _make_id as _mk
-        entity_node = self._graph._nodes.get(_mk(current_topic)) if current_topic != "none" else None
-        facts_summary = ", ".join(
-            f.get("fact", "") for f in (entity_node.get("facts", []) if entity_node else [])
-        )[:500]
-
-        plan = await self._planner.plan(
-            user_text, current_topic if current_topic != "none" else "",
-            entity_node.get("type", "") if entity_node else "",
-            facts_summary,
-        )
+        # Emit planner decision
         await self._bus.emit(PlannerDecision(
-            tool=plan.tool, entity=plan.entity, query=plan.query,
+            tool=prep.plan.tool, entity=prep.plan.entity, query=prep.plan.query,
         ))
 
-        # ── Step 2.6: Execute the plan ──
-        exec_result = await self._executor.execute(plan)
+        # ── Step 2.5b: Decide action ──
+        _SEARCH_WORDS = frozenset(("buscá", "busca", "googleá", "googlea", "internet", "buscame", "buscalo"))
+        _CONFIRM_WORDS_SEARCH = frozenset(("si", "sí", "dale", "ok", "claro", "yes", "porfa", "porfavor", "por", "favor"))
+        msg_words = set(user_text.strip().lower().rstrip("!.?,").split())
+        user_asked_search = bool(msg_words & _SEARCH_WORDS)
+        user_confirmed_search = bool(
+            self._pending_search and (msg_words & _CONFIRM_WORDS_SEARCH)
+        )
+
+        # Once user authorized search, follow-up questions auto-search
+        is_followup = self._search_authorized and self._pending_search and not prep.has_context
+
+        if prep.has_context:
+            action = "graph"
+            # If graph has data, we don't need auto-search anymore
+            self._search_authorized = False
+            self._pending_search = ""
+        elif user_asked_search or user_confirmed_search or is_followup:
+            action = "search"
+            self._search_authorized = True
+        elif not prep.has_context and self._mcp and self._mcp.has_servers:
+            action = "ask_user"
+            if not self._pending_search:
+                self._pending_search = prep.plan.entity or prep.topic
+        else:
+            action = "no_data"
+
+        await self._bus.emit(AcervoDecision(
+            has_context=prep.has_context,
+            needs_tool=prep.needs_tool,
+            action=action,
+        ))
+
+        # ── Step 3: Client handles MCP tools if needed ──
+        web_content = ""
+        if action == "search" and self._mcp:
+            # Build search query: entity + user's specific question
+            base_entity = self._pending_search or prep.plan.entity or prep.topic
+            # If user asked a specific follow-up, combine entity + question
+            if user_asked_search or user_confirmed_search:
+                # "si porfavor" → just search the entity
+                # "busca cuantos libros tiene" → search "Harry Potter cuantos libros tiene"
+                extra = user_text.strip()
+                # Don't include confirmation words in the query
+                if user_confirmed_search and len(msg_words) <= 3:
+                    search_query = base_entity
+                else:
+                    search_query = f"{base_entity} {extra}" if base_entity.lower() not in extra.lower() else extra
+            else:
+                search_query = base_entity
+
+            if search_query:
+                web_content = await self._mcp.search_web(search_query)
+                if web_content:
+                    prep.add_web_results(web_content)
+                    # Keep pending_search alive for follow-up questions
+                    # Only clear when topic explicitly changes to something new
+
+        # Emit executor result
+        source = "web" if web_content else ("graph" if prep.warm_content else "empty")
         await self._bus.emit(ExecutorResultEvent(
-            source=exec_result.source,
-            node_count=exec_result.node_count,
-            fact_count=exec_result.fact_count,
+            source=source,
+            node_count=web_content.count("\n\n") if web_content else (
+                prep.warm_content.count("# ") if prep.warm_content else 0
+            ),
+            fact_count=prep.warm_content.count("- ") if prep.warm_content else 0,
+            content_preview=web_content[:500] if web_content else "",
         ))
 
-        # ── Step 2.7: Build context stack with executor result ──
-        context_stack, hot_tk, warm_tk, total_tk = await self._context_index.build_context_stack(
-            history, current_topic, warm_override=exec_result.content,
-        )
-
-        # If executor returned empty AND user is asking a question, inject instruction
-        # Don't inject when user is stating facts (affirmations don't end with ?)
-        is_question = user_text.rstrip().endswith("?") or any(
-            w in user_text.lower() for w in ("sabes", "conoces", "qué ", "que ", "cómo ", "como ", "cuándo", "cuando", "dónde", "donde")
-        )
-        if exec_result.source == "empty" and is_question and context_stack:
+        # ── Step 4: Inject instruction if no context ──
+        # Skip instruction when we just searched (web results are in context)
+        # or when user confirmed a search (even if it failed)
+        context_stack = prep.context_stack
+        if source == "empty" and action != "search" and context_stack:
             last = context_stack[-1]
-            if last.role == "user":
-                context_stack[-1] = ChatMessage(
-                    role="user",
-                    content=(
-                        "[INSTRUCCIÓN: No hay información verificada disponible. "
-                        "Respondé: 'No tengo información verificada sobre eso. ¿Me podés contar más?']\n\n"
-                        + last.content
-                    ),
+            if last.get("role") == "user":
+                is_question = user_text.rstrip().endswith("?") or any(
+                    w in user_text.lower() for w in (
+                        "sabes", "conoces", "qué ", "que ", "cómo ", "como ",
+                        "cuándo", "cuando", "dónde", "donde",
+                    )
                 )
+                entity_hint = prep.plan.entity or prep.topic
+                if is_question:
+                    if action == "ask_user":
+                        # No data, MCP available — ask user if they want to search
+                        instruction = (
+                            f"[INSTRUCCIÓN: No tenés información verificada sobre '{entity_hint}'. "
+                            "Respondé de forma natural: mencioná que no tenés datos guardados "
+                            "pero que podés buscarlo en internet si quiere. "
+                            "Preguntale si quiere que busques. No inventes datos.]\n\n"
+                        )
+                    else:
+                        instruction = (
+                            f"[INSTRUCCIÓN: No tenés información verificada sobre '{entity_hint}'. "
+                            "Respondé de forma natural: mencioná que no tenés datos guardados "
+                            "pero podés preguntar qué quiere saber o contarte. "
+                            "No inventes datos. Sé conversacional.]\n\n"
+                        )
+                else:
+                    instruction = (
+                        "[INSTRUCCIÓN: El usuario te está dando información nueva. "
+                        "Aceptala naturalmente y seguí la conversación. "
+                        "No pidas confirmación.]\n\n"
+                    )
+                context_stack[-1] = {
+                    "role": "user",
+                    "content": instruction + last["content"],
+                }
 
-        # Context payload as JSON — exact messages sent to LLM
-        ctx_payload = [{"role": m.role, "content": m.content} for m in context_stack]
-        context_summary = json.dumps(ctx_payload, ensure_ascii=False, indent=2)
-
+        # Emit context built
+        ctx_payload = json.dumps(context_stack, ensure_ascii=False, indent=2)
         await self._bus.emit(ContextBuilt(
             hot_messages=len(context_stack) - 1,
-            hot_tokens=hot_tk,
-            warm_topic=current_topic if warm_tk > 0 else "",
-            warm_tokens=warm_tk,
-            total_tokens=total_tk,
-            context_summary=context_summary,
+            hot_tokens=prep.hot_tokens,
+            warm_topic=prep.topic if prep.warm_tokens > 0 else "",
+            warm_tokens=prep.warm_tokens,
+            total_tokens=prep.total_tokens,
+            context_summary=ctx_payload,
         ))
 
-        # ── Step 2.8: Extract evicted pairs (sliding window overflow) ──
-        await self._extract_evicted_pairs(history)
+        # ── Step 5: LLM streaming ──
+        # Convert dict messages to ChatMessage for the router
+        chat_messages = [ChatMessage(role=m["role"], content=m["content"]) for m in context_stack]
+        clean_text = await self._step_stream(chat_messages, temperature)
 
-        # ── Step 3: LLM streaming ──
-        clean_text = await self._step_stream(context_stack, temperature)
+        # ── Step 6: Acervo processes response (extract + persist) ──
+        await self._bus.emit(ExtractionStarted())
+        try:
+            result = await self._memory.process(user_text, clean_text, web_results=web_content)
+            pairs = [(e.name, e.type) for e in result.entities]
+            await self._bus.emit(ExtractionCompleted(entities=tuple(pairs)))
 
-        # ── Step 4: Entity extraction on current turn ──
-        await self._step_extract_and_persist(user_text, clean_text)
+            if result.entities:
+                for f in result.facts:
+                    if f.speaker == "assistant":
+                        await self._bus.emit(FactFiltered(
+                            entity=f.entity, fact=f.fact, reason="assistant_speaker",
+                        ))
+                for entity, fact, reason in self._graph.dedup_log:
+                    await self._bus.emit(FactFiltered(
+                        entity=entity, fact=fact, reason="duplicate",
+                    ))
+                await self._bus.emit(GraphUpdated(
+                    node_count=self._graph.node_count,
+                    edge_count=self._graph.edge_count,
+                ))
+        except Exception as e:
+            await self._bus.emit(ExtractionCompleted(error=str(e)))
 
-        # ── Step 5: Check if model asked for confirmation ──
+        # ── Step 7: Check if model asked for confirmation ──
         await self._detect_confirmation(clean_text)
 
-        # Save state for training capture (needed in next turn for confirmation)
-        self._last_context_payload = context_summary
+        self._last_context_payload = ctx_payload
         self._last_model_response = clean_text
         self._last_user_message = user_text
 
         return clean_text
-
-    def _activate_mentioned_nodes(self, user_text: str) -> None:
-        """Set graph nodes to 'hot' if the user message mentions them.
-
-        Supports exact match, substring/alias match (e.g. 'cipo' → 'cipolletti'),
-        and multi-word label match.
-        """
-        msg_lower = user_text.lower()
-        msg_words = set(msg_lower.split())
-        for node in self._graph._nodes.values():
-            label = node.get("label", "").lower()
-            if not label or len(label) < 3:
-                continue
-            # Exact match: label appears in message
-            if label in msg_lower:
-                node["status"] = "hot"
-                continue
-            # Alias/prefix match: "cipo" matches "cipolletti"
-            for word in msg_words:
-                if len(word) >= 4 and label.startswith(word):
-                    node["status"] = "hot"
-                    break
-            # Multi-word label: all words present in message
-            label_words = set(label.split())
-            if len(label_words) > 1 and label_words.issubset(msg_words):
-                node["status"] = "hot"
-
-    async def _extract_evicted_pairs(self, history: list[ChatMessage]) -> None:
-        """Extract entities/facts from pairs that fell out of the sliding window.
-
-        Uses _last_included_pairs and _last_total_pairs from context_index
-        to identify which pairs were evicted this turn.
-        """
-        ci = self._context_index
-        included = getattr(ci, "_last_included_pairs", 0)
-        total = getattr(ci, "_last_total_pairs", 0)
-        evicted_count = total - included
-
-        if evicted_count <= 0:
-            return
-
-        # Get conversation without system prompt
-        conversation = history[1:]
-        # Walk backwards to find pairs (same logic as context_index)
-        pairs: list[tuple[ChatMessage, ChatMessage]] = []
-        i = len(conversation) - 2  # skip current user message
-        while i >= 1:
-            if conversation[i].role == "assistant" and conversation[i - 1].role == "user":
-                pairs.append((conversation[i - 1], conversation[i]))
-                i -= 2
-            else:
-                i -= 1
-
-        # Evicted pairs are the ones beyond the included window
-        evicted = pairs[included:included + evicted_count]
-        for user_msg, asst_msg in evicted:
-            try:
-                await self._step_extract_and_persist(user_msg.content, asst_msg.content)
-            except Exception:
-                pass  # Don't break pipeline for eviction extraction
 
     async def force_compact(self, history: list[ChatMessage], topic: str) -> None:
         """Force compaction on session close."""
         if topic == "none" or len(history) < 3:
             return
         try:
-            compacted = await self._context_index.maybe_compact(history, topic)
+            history_dicts = [{"role": m.role, "content": m.content} for m in history]
+            compacted = await self._memory.context_index.maybe_compact(history_dicts, topic)
             if compacted:
                 await self._bus.emit(CompactionCompleted(compacted=True, overflow_tokens=0))
         except Exception:
@@ -275,21 +292,19 @@ class ConversationPipeline:
     # ── Confirmation logic ──
 
     async def _check_confirmation(self, user_text: str) -> str | None:
-        """Check if user is confirming a pending fact. Returns response or None."""
         pending = self._pending_confirmation
         if not pending:
             return None
 
-        # Check if user's message is a confirmation
-        msg_clean = user_text.strip().lower().rstrip("!.?")
-        is_confirm = msg_clean in self._CONFIRM_WORDS
+        msg_clean = user_text.strip().lower().rstrip("!.?,")
+        words = set(msg_clean.split())
+        is_confirm = msg_clean in self._CONFIRM_WORDS or bool(words & self._CONFIRM_WORDS)
 
         if is_confirm:
             entity = pending["entity"]
             fact = pending["fact"]
             corrections = pending.get("corrections", [])
 
-            # Apply corrections: remove contradicted edges/facts
             for corr in corrections:
                 if corr.get("remove_edge"):
                     src, tgt, rel = corr["remove_edge"]
@@ -298,45 +313,36 @@ class ConversationPipeline:
                     ent, ft = corr["remove_fact"]
                     self._graph.remove_fact(ent, ft)
 
-            # Save the confirmed fact
-            from memory.graph import _make_id
             node_id = _make_id(entity)
             now_str = __import__("datetime").datetime.now().strftime("%Y-%m-%d")
-            session_id = self._graph._session_id
+            session_id = self._graph.session_id
 
-            if node_id in self._graph._nodes:
-                node = self._graph._nodes[node_id]
+            node = self._graph.get_node(node_id)
+            if node:
                 node["facts"].append({
-                    "fact": fact,
-                    "date": now_str,
-                    "session": session_id,
-                    "source": "user_confirmed",
+                    "fact": fact, "date": now_str,
+                    "session": session_id, "source": "user_confirmed",
                 })
             else:
                 self._graph.upsert_entities(
-                    [{"name": entity, "type": "entidad"}],
-                    facts=[{"entity": entity, "fact": fact, "source": "user_confirmed"}],
+                    [(entity, "entidad")],
+                    facts=[(entity, fact, "user_confirmed")],
                 )
-            self._graph._save()
+            self._graph.save()
 
             await self._bus.emit(ConfirmationAccepted(entity=entity, fact=fact))
-
-            # Training capture: confirmation
             save_sample(
                 context_sent=self._last_context_payload,
                 user_message=user_text,
                 model_response=self._last_model_response,
-                correction=fact,
-                sample_type="confirmation",
+                correction=fact, sample_type="confirmation",
             )
             await self._bus.emit(TrainingSampleSaved(
                 sample_type="confirmation", entity=entity,
             ))
-
             self._pending_confirmation = None
             return f"Guardado: {entity} — {fact}"
         else:
-            # Not a confirmation — training capture: rejection
             entity = pending.get("entity", "")
             save_sample(
                 context_sent=self._last_context_payload,
@@ -348,32 +354,19 @@ class ConversationPipeline:
             await self._bus.emit(TrainingSampleSaved(
                 sample_type="rejection", entity=entity,
             ))
-
             self._pending_confirmation = None
             return None
 
-    _CORRECTION_PATTERNS = (
-        "no,", "no ", "mentira", "no es así", "no es asi", "está mal",
-        "esta mal", "incorrecto", "error", "equivocado", "falso",
-    )
-
     async def _detect_confirmation(self, response_text: str) -> None:
-        """Detect if the model accepted a correction and is asking for confirmation.
-
-        Only triggers when the model response contains '¿Lo confirmo como dato verificado?'
-        AND we can find the corrected fact from the extraction results.
-        """
         lower = response_text.lower()
         if "¿lo confirmo como dato verificado?" not in lower:
             return
 
-        # Extract the fact from the text before the question
         idx = lower.find("¿lo confirmo")
         if idx < 0:
             return
 
         before = response_text[:idx].strip().rstrip(".").strip()
-        # Remove "Entendido — " prefix if present
         for prefix in ("Entendido —", "Entendido -", "Entendido,"):
             if before.startswith(prefix):
                 before = before[len(prefix):].strip()
@@ -382,15 +375,11 @@ class ConversationPipeline:
         if not before or len(before) < 3:
             return
 
-        # Find the entity this fact is ABOUT.
-        # Strategy: find which entity the user was asking about in their
-        # last message (self._last_user_message), not just any match in
-        # the model's response. The user's question subject is the entity.
         user_msg_lower = self._last_user_message.lower()
         entity = ""
-        best_pos = len(user_msg_lower) + 1  # position in user message
+        best_pos = len(user_msg_lower) + 1
 
-        for node in self._graph._nodes.values():
+        for node in self._graph.get_all_nodes():
             label = node.get("label", "")
             if not label:
                 continue
@@ -399,83 +388,43 @@ class ConversationPipeline:
                 entity = label
                 best_pos = pos
 
-        # If not found in user message, try the model response
         if not entity:
-            for node in self._graph._nodes.values():
+            for node in self._graph.get_all_nodes():
                 label = node.get("label", "")
                 if label and label.lower() in before.lower():
                     entity = label
                     break
 
         if not entity:
-            entity = self._topic_detector.current_topic
+            entity = self._memory.topic_detector.current_topic
 
-        # Detect corrections: look for contradicted edges in the user's
-        # original message from the current turn's history
         corrections: list[dict] = []
-        # If the response mentions a correction, check existing edges
-        # that contradict the new fact
-        from memory.graph import _make_id
         entity_id = _make_id(entity)
-        # Check if the fact contradicts existing edges (e.g., ubicado_en)
-        for edge in self._graph._edges:
-            if edge["source"] == entity_id or edge["target"] == entity_id:
-                rel = edge.get("relation", "")
-                if rel in ("ubicado_en", "pertenece_a", "parte_de"):
-                    other_id = edge["target"] if edge["source"] == entity_id else edge["source"]
-                    other_node = self._graph._nodes.get(other_id)
-                    other_label = other_node.get("label", "") if other_node else ""
-                    # If the correction mentions this isn't right
-                    if other_label.lower() in before.lower():
-                        corrections.append({
-                            "remove_edge": (entity, other_label, rel),
-                        })
+        for edge in self._graph.get_edges_for(entity_id):
+            rel = edge.get("relation", "")
+            if rel in ("ubicado_en", "pertenece_a", "parte_de"):
+                other_id = edge["target"] if edge["source"] == entity_id else edge["source"]
+                other_node = self._graph.get_node(other_id)
+                other_label = other_node.get("label", "") if other_node else ""
+                if other_label.lower() in before.lower():
+                    corrections.append({"remove_edge": (entity, other_label, rel)})
 
         self._pending_confirmation = {
-            "entity": entity,
-            "fact": before,
-            "corrections": corrections,
+            "entity": entity, "fact": before, "corrections": corrections,
         }
         await self._bus.emit(ConfirmationPending(entity=entity, fact=before))
 
-        # Training capture: correction detected
         save_sample(
             context_sent=self._last_context_payload,
             user_message=self._last_user_message,
             model_response=response_text,
-            correction=before,
-            sample_type="correction",
+            correction=before, sample_type="correction",
         )
         await self._bus.emit(TrainingSampleSaved(
             sample_type="correction", entity=entity,
         ))
 
-    # ── Internal steps ──
-
-    async def _step_topic_detect(self, user_text: str) -> None:
-        try:
-            detection = await self._topic_detector.detect(user_text)
-
-            await self._bus.emit(TopicDetectStep(
-                level=detection.level,
-                verdict=detection.verdict.value,
-                confidence=detection.confidence,
-                current_topic=detection.current_topic,
-                keyword=detection.keyword,
-                similarity=detection.similarity,
-                answer=detection.answer,
-            ))
-
-            if detection.verdict in (TopicVerdict.CHANGED, TopicVerdict.SUBTOPIC):
-                prev = detection.current_topic
-                new_label = await self._topic_detector.extract_topic_label(user_text)
-                self._topic_detector.current_topic = new_label
-                await self._bus.emit(TopicChanged(
-                    new_topic=new_label,
-                    previous_topic=prev,
-                ))
-        except Exception as e:
-            await self._bus.emit(PipelineError(step="topic_detect", error=str(e)))
+    # ── LLM streaming ──
 
     async def _step_stream(
         self, context_stack: list[ChatMessage], temperature: float
@@ -541,67 +490,3 @@ class ConversationPipeline:
         ))
 
         return clean_text
-
-    async def _step_compact(self, history: list[ChatMessage], topic: str) -> None:
-        """Check if warm layer needs compaction and report result."""
-        try:
-            conversation = history[1:] if len(history) > 1 else []
-            max_hot = self._context_index._settings.hot_layer_max_messages
-            overflow = conversation[:-max_hot] if len(conversation) > max_hot else []
-            overflow_tokens = sum(count_tokens(m.content) for m in overflow)
-
-            compacted = await self._context_index.maybe_compact(history, topic)
-
-            await self._bus.emit(CompactionCompleted(
-                compacted=compacted,
-                overflow_tokens=overflow_tokens,
-            ))
-        except Exception as e:
-            await self._bus.emit(PipelineError(step="compact", error=str(e)))
-
-    async def _step_extract_and_persist(
-        self, user_text: str, assistant_text: str
-    ) -> None:
-        await self._bus.emit(ExtractionStarted())
-
-        try:
-            result = await self._extractor.extract(user_text, assistant_text)
-            pairs = [(e.name, e.type) for e in result.entities]
-
-            await self._bus.emit(ExtractionCompleted(entities=tuple(pairs)))
-        except Exception as e:
-            await self._bus.emit(ExtractionCompleted(error=str(e)))
-            return
-
-        if not result.entities:
-            return
-
-        # Filter facts: only keep user-stated facts, emit events for filtered
-        user_facts = []
-        for f in result.facts:
-            if f.speaker == "assistant":
-                await self._bus.emit(FactFiltered(
-                    entity=f.entity, fact=f.fact, reason="assistant_speaker",
-                ))
-            else:
-                user_facts.append((f.entity, f.fact, f.source))
-
-        try:
-            relations = [(r.source, r.target, r.relation) for r in result.relations]
-
-            loop = asyncio.get_event_loop()
-            node_count, edge_count = await loop.run_in_executor(
-                None, self._graph.upsert_entities, pairs, relations, user_facts,
-            )
-
-            # Emit events for duplicate facts detected by the graph
-            for entity, fact, reason in self._graph._dedup_log:
-                await self._bus.emit(FactFiltered(
-                    entity=entity, fact=fact, reason="duplicate",
-                ))
-
-            await self._bus.emit(GraphUpdated(
-                node_count=node_count, edge_count=edge_count,
-            ))
-        except Exception as e:
-            await self._bus.emit(PipelineError(step="graph_persist", error=str(e)))

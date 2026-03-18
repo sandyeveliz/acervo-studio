@@ -14,8 +14,8 @@ from textual.widgets._header import HeaderIcon
 
 from config.settings import load_settings
 from core.event_bus import EventBus
-from core.context_index import ContextIndex
 from core.events import (
+    AcervoDecision,
     CompactionCompleted,
     ConfirmationAccepted,
     ConfirmationPending,
@@ -36,14 +36,13 @@ from core.events import (
     TrainingSampleSaved,
 )
 from core.pipeline import ConversationPipeline
-from core.topic_detector import TopicDetector
-from memory.extractor import ConversationExtractor
-from memory.graph import TopicGraph
+from acervo import Acervo
+from providers.acervo_adapter import ModelRouterAdapter
 from providers.base import ChatMessage
 from providers.model_router import ModelRouter
+from providers.mcp_client import MCPManager
 from tui.widgets.chat_panel import ChatPanel
 from tui.widgets.log_stream import StatsPanel
-# TracePanel kept for future debug mode but not mounted by default
 from utils.token_counter import count_tokens
 
 _AGENTS_DIR = Path(__file__).resolve().parent.parent / "config" / "agents"
@@ -70,6 +69,7 @@ class AVSAgentsApp(App):
         Binding("ctrl+c", "quit", "Quit"),
         Binding("ctrl+r", "reset", "Reset"),
         Binding("ctrl+y", "copy_chat", "Copy chat"),
+        Binding("ctrl+d", "toggle_verbose", "Debug"),
     ]
 
     def __init__(self) -> None:
@@ -79,20 +79,25 @@ class AVSAgentsApp(App):
 
         # Build pipeline components
         self._bus = EventBus()
-        self._topic_detector = TopicDetector(self._router, self._settings.context)
-        self._extractor = ConversationExtractor(self._router)
-        self._graph = TopicGraph()
-        self._context_index = ContextIndex(
-            self._settings.context, self._graph, self._router,
+        self._mcp = MCPManager()
+
+        ctx = self._settings.context
+        self._memory = Acervo(
+            llm=ModelRouterAdapter(self._router),
+            owner="Sandy",
+            hot_layer_max_messages=ctx.hot_layer_max_messages,
+            hot_layer_max_tokens=ctx.hot_layer_max_tokens,
+            compaction_trigger_tokens=ctx.compaction_trigger_tokens,
+            embed_threshold=ctx.topic_change_embed_threshold,
         )
+        self._graph = self._memory.graph
+
         self._pipeline = ConversationPipeline(
             bus=self._bus,
             router=self._router,
-            topic_detector=self._topic_detector,
-            extractor=self._extractor,
-            graph=self._graph,
-            context_index=self._context_index,
+            memory=self._memory,
             model_name=self._settings.lmstudio.model,
+            mcp=self._mcp if self._mcp.has_servers else None,
         )
 
         # Load agent config
@@ -103,8 +108,9 @@ class AVSAgentsApp(App):
             ChatMessage(role="system", content=self._system_prompt),
         ]
 
-        # Streaming state for chunk handling
+        # UI state
         self._stream_bubble = None
+        self._verbose = False
 
     def compose(self) -> ComposeResult:
         yield Header(icon="⟳")
@@ -123,6 +129,14 @@ class AVSAgentsApp(App):
 
         self._subscribe_events()
         self._init_chat()
+        self._probe_mcp()
+
+    @work
+    async def _probe_mcp(self) -> None:
+        """Probe MCP servers on startup to set initial status."""
+        if self._mcp and self._mcp.has_servers:
+            await self._mcp.probe_servers()
+            self.call_later(self.query_one(StatsPanel).refresh_mcp_status)
 
     def _subscribe_events(self) -> None:
         """Subscribe to pipeline events. Steps appear inline in the chat timeline."""
@@ -130,45 +144,89 @@ class AVSAgentsApp(App):
         stats = self.query_one(StatsPanel)
         chat = self.query_one("#chat-panel", ChatPanel)
 
-        # Step 2: Topic detection
+        # Step 1: Message received — refresh graph status (after cycle_status)
+        bus.subscribe(MessageReceived, lambda e: self.call_later(
+            stats.update_graph_status, self._graph,
+        ))
+
+        # Step 2: Topic detection (Acervo)
         def _on_topic_step(e: TopicDetectStep) -> None:
             detail = f"Topic  {e.verdict}  (L{e.level}, conf={e.confidence:.2f})"
             if e.current_topic:
-                detail += f"  prev=\"{e.current_topic}\""
-            chat.add_step("topic_detect", detail)
+                detail += f"  topic=\"{e.current_topic}\""
+            verbose = ""
+            if e.keyword:
+                verbose += f"keyword=\"{e.keyword}\"  "
+            if e.similarity is not None:
+                verbose += f"sim={e.similarity:.3f}  "
+            if e.answer:
+                verbose += f"answer=\"{e.answer}\""
+            chat.add_step("acervo", detail, verbose_detail=verbose)
 
         bus.subscribe(TopicDetectStep, _on_topic_step)
 
         bus.subscribe(TopicChanged, lambda e: chat.add_step(
-            "topic_changed", f"Topic set  \"{e.new_topic}\"",
+            "acervo", f"Topic → \"{e.new_topic}\"",
         ))
 
-        # Step 2.5: Planner
-        bus.subscribe(PlannerDecision, lambda e: chat.add_step(
-            "topic_detect",
-            f"Planner  {e.tool} · {e.entity}" + (f" · {e.query}" if e.query else ""),
-        ))
+        # Step 2.5: Planner (Acervo)
+        def _on_planner(e: PlannerDecision) -> None:
+            detail = f"Plan  {e.tool} · {e.entity}"
+            if e.query:
+                detail += f" · \"{e.query}\""
+            chat.add_step("acervo", detail)
 
-        # Step 2.6: Executor
-        bus.subscribe(ExecutorResult, lambda e: chat.add_step(
-            "topic_detect",
-            f"Executor  {e.source} → {e.node_count} nodos · {e.fact_count} hechos",
-        ))
+        bus.subscribe(PlannerDecision, _on_planner)
 
-        # Step 2.7: Context built
+        # Step 2.5b: Acervo decision
+        _ACTION_LABELS = {
+            "graph": "📗 Using graph data",
+            "search": "🔍 Searching web...",
+            "ask_user": "❓ No data — will ask user",
+            "no_data": "📭 No data available",
+        }
+
+        def _on_acervo_decision(e: AcervoDecision) -> None:
+            label = _ACTION_LABELS.get(e.action, e.action)
+            verbose = f"has_context={e.has_context} needs_tool={e.needs_tool}"
+            chat.add_step("acervo", label, verbose_detail=verbose)
+
+        bus.subscribe(AcervoDecision, _on_acervo_decision)
+
+        # Step 2.6: Executor (Pipeline)
+        def _on_executor(e: ExecutorResult) -> None:
+            if e.source == "web":
+                detail = f"Web search → {e.node_count} results"
+            elif e.source == "error":
+                detail = f"[bold red]Error[/bold red]  {e.error_msg}"
+                if e.error_msg:
+                    self.call_later(self.notify,
+                        f"Executor: {e.error_msg[:100]}", severity="error", timeout=5)
+            elif e.source == "graph":
+                detail = f"Graph → {e.node_count} nodos · {e.fact_count} hechos"
+            else:
+                detail = f"No results"
+            chat.add_step("pipeline", detail)
+            if e.source in ("web", "error"):
+                self.call_later(stats.refresh_mcp_status)
+
+        bus.subscribe(ExecutorResult, _on_executor)
+
+        # Step 2.7: Context built (Acervo)
         def _on_context_built(e: ContextBuilt) -> None:
             warm = f"  warm=\"{e.warm_topic}\" {e.warm_tokens}tk" if e.warm_topic else ""
-            chat.add_step("topic_detect",
+            chat.add_step("acervo",
                 f"Context  hot={e.hot_messages}msgs {e.hot_tokens}tk{warm}  total={e.total_tokens}tk")
             if e.context_summary:
                 chat.add_context_message(e.context_summary, e.total_tokens)
 
         bus.subscribe(ContextBuilt, _on_context_built)
 
-        # Step 3: Streaming
+        # Step 3: Streaming (LLM)
         def _on_stream_started(e: StreamStarted) -> None:
-            chat.add_step("stream_start",
-                f"LLM stream  {e.provider}:{e.model}  msgs={e.history_len}")
+            detail = f"Streaming  {e.provider}:{e.model}  msgs={e.history_len}"
+            verbose = f"endpoint={e.endpoint}  temp={e.temperature}"
+            chat.add_step("llm", detail, verbose_detail=verbose)
             self._on_stream_start()
 
         bus.subscribe(StreamStarted, _on_stream_started)
@@ -179,7 +237,7 @@ class AVSAgentsApp(App):
 
         bus.subscribe(StreamCompleted, _on_stream_complete)
 
-        # Step 4: Extraction
+        # Step 4: Extraction (Acervo post-LLM)
         bus.subscribe(ExtractionStarted, lambda e: self.call_later(
             stats.set_extracting, True,
         ))
@@ -190,24 +248,50 @@ class AVSAgentsApp(App):
                 self.call_later(chat.add_step, "error",
                     f"[bold red]Extract failed[/bold red]  {e.error}")
             elif entities:
-                names = ", ".join(f"{n}({t})" for n, t in entities)
-                self.call_later(chat.add_step, "extract",
-                    f"Extract  {len(entities)} entities: {names}")
+                # Show entity names with their graph status
+                parts = []
+                for name, etype in entities:
+                    from acervo.graph import _make_id
+                    node = self._graph.get_node(_make_id(name))
+                    status = node.get("status", "?") if node else "new"
+                    if status == "pending_verification":
+                        parts.append(f"{name}({etype}) [dim]?[/dim]")
+                    elif status == "hot":
+                        parts.append(f"{name}({etype})")
+                    else:
+                        parts.append(f"{name}({etype}) [dim]{status}[/dim]")
+                self.call_later(chat.add_step, "acervo",
+                    f"Extract  {len(entities)} entities: {', '.join(parts)}")
             else:
-                self.call_later(chat.add_step, "extract",
+                self.call_later(chat.add_step, "acervo",
                     "Extract → no entities")
             self.call_later(stats.add_entities, entities)
 
         bus.subscribe(ExtractionCompleted, _on_extraction_done)
 
-        # Step 4.5: Fact filtering (only show in debug)
-        bus.subscribe(FactFiltered, lambda e: None)  # silent
+        # Step 4.5: Fact filtering — show only in verbose mode
+        def _on_fact_filtered(e: FactFiltered) -> None:
+            if self._verbose:
+                self.call_later(chat.add_step, "debug",
+                    f"[dim]Fact filtered: {e.entity} — {e.reason}[/dim]",
+                    verbose_detail=f"\"{e.fact}\"")
+
+        bus.subscribe(FactFiltered, _on_fact_filtered)
 
         # Step 5: Graph
-        bus.subscribe(GraphUpdated, lambda e: self.call_later(
-            chat.add_step, "graph",
-            f"Graph updated  {e.node_count} nodos  {e.edge_count} aristas",
-        ))
+        def _on_graph_updated(e: GraphUpdated) -> None:
+            # Show dedup info in verbose mode
+            verbose = ""
+            if self._verbose:
+                dedup = self._graph.dedup_log
+                if dedup:
+                    verbose = "  ".join(f"dup: {e}→{f}" for e, f, _ in dedup[:3])
+            self.call_later(chat.add_step, "graph",
+                f"Graph updated  {e.node_count} nodos  {e.edge_count} aristas",
+                verbose)
+            self.call_later(stats.update_graph_status, self._graph)
+
+        bus.subscribe(GraphUpdated, _on_graph_updated)
 
         # Step 6: Confirmation
         bus.subscribe(ConfirmationPending, lambda e: self.call_later(
@@ -219,8 +303,13 @@ class AVSAgentsApp(App):
             f"[green]Confirmed → graph updated[/green]  {e.entity}: {e.fact}",
         ))
 
-        # Step 7: Training capture (silent)
-        bus.subscribe(TrainingSampleSaved, lambda e: None)
+        # Step 7: Training capture — show only in verbose mode
+        def _on_training(e: TrainingSampleSaved) -> None:
+            if self._verbose:
+                self.call_later(chat.add_step, "debug",
+                    f"[dim]Training sample: {e.sample_type} · {e.entity}[/dim]")
+
+        bus.subscribe(TrainingSampleSaved, _on_training)
 
         # Step 3.5: Compaction (only show when it actually compacts)
         def _on_compact(e: CompactionCompleted) -> None:
@@ -271,21 +360,37 @@ class AVSAgentsApp(App):
             ttft_ms=event.ttft_ms,
         )
 
+        # Show extra stream stats in verbose mode
+        if self._verbose and (event.think_tokens or event.speed_tps):
+            chat = self.query_one("#chat-panel", ChatPanel)
+            extra = []
+            if event.think_tokens:
+                extra.append(f"think={event.think_tokens}tk")
+            if event.speed_tps:
+                extra.append(f"speed={event.speed_tps:.1f}tk/s")
+            self.call_later(chat.add_step, "debug",
+                f"[dim]Stream detail: {' · '.join(extra)}[/dim]")
+
     # ── Init / Input / Reset / Quit ──
 
     def _init_chat(self) -> None:
         chat = self.query_one("#chat-panel", ChatPanel)
         sys_tokens = count_tokens(self._system_prompt)
         chat.set_initial_tokens(sys_tokens)
-        chat.add_message(
+
+        # System prompt as collapsible (collapsed by default)
+        preview = self._system_prompt[:80].replace("\n", " ")
+        chat.add_collapsible_message(
             f"[dim]{self._system_prompt}[/dim]",
-            role="system",
+            title=f"SYS: {preview}...  ({sys_tokens} tk)",
+            collapsed=True,
         )
 
         stats = self.query_one(StatsPanel)
         stats.set_router(self._router)
         stats.set_model(self._settings.lmstudio.model)
         stats.set_system_tokens(sys_tokens)
+        stats.set_mcp(self._mcp)
 
         self.query_one("#input", Input).focus()
 
@@ -316,11 +421,19 @@ class AVSAgentsApp(App):
         self._history = [
             ChatMessage(role="system", content=self._system_prompt),
         ]
-        self._topic_detector.current_topic = "none"
+        self._memory.topic_detector.current_topic = "none"
         self._stream_bubble = None
         self.query_one("#chat-panel", ChatPanel).reset()
         self.query_one(StatsPanel).reset()
         self._init_chat()
+
+    def action_toggle_verbose(self) -> None:
+        """Toggle verbose/debug mode for pipeline steps."""
+        self._verbose = not self._verbose
+        chat = self.query_one("#chat-panel", ChatPanel)
+        chat.set_verbose(self._verbose)
+        state = "ON" if self._verbose else "OFF"
+        self.notify(f"Debug mode {state}", timeout=2)
 
     def action_copy_chat(self) -> None:
         """Copy chat content to clipboard."""
@@ -332,7 +445,7 @@ class AVSAgentsApp(App):
 
     async def action_quit(self) -> None:
         # Save session summary before closing
-        topic = self._topic_detector.current_topic
+        topic = self._memory.topic_detector.current_topic
         await self._pipeline.force_compact(self._history, topic)
         await self._router.close()
         self.exit()

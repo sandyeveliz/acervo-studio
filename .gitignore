@@ -26,3 +26,7 @@ Thumbs.db
 
 # Logs
 *.log
+
+# MCP configuration
+# this is to not upload the MCP configuration file which may contain sensitive information
+.mcp.json

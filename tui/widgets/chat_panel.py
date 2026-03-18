@@ -10,6 +10,9 @@ from utils.token_counter import count_tokens
 
 _ICONS: dict[str, str] = {
     "message_in": "→",
+    "acervo": "📦",
+    "pipeline": "⚙",
+    "llm": "◇",
     "topic_detect": "◈",
     "topic_changed": "◈",
     "stream_start": "◇",
@@ -17,6 +20,7 @@ _ICONS: dict[str, str] = {
     "extract": "⬡",
     "graph": "►",
     "error": "✗",
+    "debug": "⚙",
 }
 
 
@@ -89,6 +93,11 @@ class ChatPanel(VerticalScroll):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self._context_tokens: int = 0
+        self._verbose: bool = False
+
+    def set_verbose(self, verbose: bool) -> None:
+        """Toggle verbose mode for pipeline steps."""
+        self._verbose = verbose
 
     def set_initial_tokens(self, tokens: int) -> None:
         self._context_tokens = tokens
@@ -109,10 +118,31 @@ class ChatPanel(VerticalScroll):
         self.scroll_end(animate=False)
         return bubble
 
-    def add_step(self, step_type: str, detail: str) -> None:
-        """Add a pipeline step inline in the timeline."""
+    def add_collapsible_message(
+        self, content: str, title: str, collapsed: bool = True,
+    ) -> None:
+        """Add a collapsible message (used for system prompt)."""
+        collapsible = Collapsible(
+            Static(content),
+            title=title,
+            collapsed=collapsed,
+        )
+        self.mount(collapsible)
+        self.scroll_end(animate=False)
+
+    def add_step(self, step_type: str, detail: str, verbose_detail: str = "") -> None:
+        """Add a pipeline step inline in the timeline.
+
+        Args:
+            step_type: Icon key for the step
+            detail: Always-shown compact text
+            verbose_detail: Extra detail shown only in verbose mode
+        """
         icon = _ICONS.get(step_type, "·")
-        step = TimelineStep(f"[dim]{icon}  {detail}[/dim]")
+        text = f"[dim]{icon}  {detail}[/dim]"
+        if self._verbose and verbose_detail:
+            text += f"\n[dim]     {verbose_detail}[/dim]"
+        step = TimelineStep(text)
         self.mount(step)
         self.scroll_end(animate=False)
 

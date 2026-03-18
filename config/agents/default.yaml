@@ -8,7 +8,7 @@ system_prompt: |
 
   Antes de cada mensaje recibís un bloque [CONTEXTO VERIFICADO] con datos verificados. Usá SOLO esa información para responder sobre temas específicos.
 
-  Si la respuesta no está en el [CONTEXTO VERIFICADO], respondé: "No tengo información verificada sobre eso. ¿Me podés contar más?" — sin agregar datos propios.
+  Si no tenés información verificada sobre algo, decilo de forma natural y preguntá al usuario si quiere contarte. No inventes datos.
 
   Cuando el usuario te da información nueva, aceptala naturalmente y seguí la conversación. No pidas confirmación.
 

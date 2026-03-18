@@ -77,6 +77,13 @@ class PricingSettings:
 
 
 @dataclass(frozen=True)
+class WebSearchSettings:
+    api_key: str = ""
+    max_results: int = 5
+    enabled: bool = True
+
+
+@dataclass(frozen=True)
 class TUISettings:
     refresh_rate: int = 10
     log_max_lines: int = 500
@@ -92,6 +99,7 @@ class Settings:
     routing: RoutingSettings
     pricing: PricingSettings
     tui: TUISettings
+    web_search: WebSearchSettings
 
 
 def load_settings() -> Settings:
@@ -112,8 +120,8 @@ def load_settings() -> Settings:
             kv_cache=lm.get("kv_cache", True),
         ),
         lmstudio_utility=LMStudioSettings(
-            base_url=lmu.get("base_url", lm.get("base_url", "http://localhost:1234/v1")),
-            model=lmu.get("model", "qwen2.5-3b-instruct"),
+            base_url=os.getenv("LMSTUDIO_UTILITY_BASE_URL", lmu.get("base_url", lm.get("base_url", "http://localhost:1234/v1"))),
+            model=os.getenv("LMSTUDIO_UTILITY_MODEL", lmu.get("model", "qwen2.5-3b-instruct")),
             api_key=os.getenv("LMSTUDIO_API_KEY", "lm-studio"),
             context_window=lmu.get("context_window", 32_000),
             kv_cache=lmu.get("kv_cache", False),
@@ -127,4 +135,9 @@ def load_settings() -> Settings:
         routing=RoutingSettings(**raw.get("routing", {})),
         pricing=PricingSettings(**raw.get("pricing", {})),
         tui=TUISettings(**raw.get("tui", {})),
+        web_search=WebSearchSettings(
+            api_key=os.getenv("BRAVE_API_KEY", ""),
+            max_results=raw.get("web_search", {}).get("max_results", 5),
+            enabled=raw.get("web_search", {}).get("enabled", True),
+        ),
     )

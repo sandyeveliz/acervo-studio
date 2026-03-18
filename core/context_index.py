@@ -17,7 +17,7 @@ from datetime import datetime
 from pathlib import Path
 
 from config.settings import ContextSettings
-from memory.graph import TopicGraph
+from acervo.graph import TopicGraph
 from providers.base import ChatMessage
 from providers.model_router import ModelRouter
 from utils.token_counter import count_tokens
@@ -57,12 +57,14 @@ class ContextIndex:
         history: list[ChatMessage],
         current_topic: str,
         warm_override: str = "",
+        warm_source: str = "",
     ) -> tuple[list[ChatMessage], int, int, int]:
         """Build the filtered context stack for the LLM.
 
         Args:
             warm_override: If provided, use this as warm layer instead of
                 calling synthesize(). This lets the executor control the context.
+            warm_source: Source of warm content ("graph", "web", etc.)
 
         Returns:
             (context_messages, hot_tokens, warm_tokens, total_tokens)
@@ -84,7 +86,7 @@ class ContextIndex:
         if warm_override:
             warm_content = warm_override
         else:
-            from core.context_synthesizer import synthesize
+            from acervo.synthesizer import synthesize
             warm_content = synthesize(self._graph, user_text)
         warm_tokens = count_tokens(warm_content) if warm_content else 0
 
@@ -143,10 +145,17 @@ class ContextIndex:
         stack: list[ChatMessage] = [system_msg]
 
         if warm_content:
-            stack.append(ChatMessage(
-                role="user",
-                content=f"[CONTEXTO VERIFICADO]\n{warm_content}\n[FIN CONTEXTO]",
-            ))
+            if warm_source == "web":
+                # Web search results — tell the LLM these are real, usable data
+                ctx_block = (
+                    "[RESULTADOS DE BÚSQUEDA WEB — datos reales y actualizados]\n"
+                    f"{warm_content}\n"
+                    "[FIN RESULTADOS]\n"
+                    "Usá estos resultados para responder al usuario. Podés citar las fuentes."
+                )
+            else:
+                ctx_block = f"[CONTEXTO VERIFICADO]\n{warm_content}\n[FIN CONTEXTO]"
+            stack.append(ChatMessage(role="user", content=ctx_block))
             stack.append(ChatMessage(
                 role="assistant",
                 content="Entendido.",
