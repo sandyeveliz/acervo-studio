@@ -18,7 +18,29 @@
       "Bash(xargs grep:*)",
       "Skill(commit-commands:commit)",
       "Skill(commit-commands:commit:*)",
-      "Bash(git rm:*)"
+      "Bash(git rm:*)",
+      "Bash(git add:*)",
+      "Bash(git tag:*)",
+      "Bash(git pull:*)",
+      "Bash(git stash:*)",
+      "Bash(git push:*)",
+      "Bash(gh api:*)",
+      "Bash(gh run:*)",
+      "Read(//d/Development/.pm/projects/**)",
+      "Bash(find /d/Development/AVS-Agents/memory -type f -name *.py)",
+      "Bash(npm create:*)",
+      "Bash(npm install:*)",
+      "Bash(twine upload:*)",
+      "Bash(npx shadcn@latest init -d -y)",
+      "Bash(npx shadcn@latest add card badge separator scroll-area -y)",
+      "Bash(npx tsc:*)",
+      "Bash(npm run:*)",
+      "Bash(npx shadcn@latest add tooltip -y)",
+      "Bash(npx shadcn@latest add tabs input select dialog switch textarea -y)",
+      "Bash(npx shadcn@latest add tabs input select dialog switch textarea -y --overwrite)"
+    ],
+    "additionalDirectories": [
+      "d:\\Development\\AVS-Agents\\web\\.git"
     ]
   }
 }

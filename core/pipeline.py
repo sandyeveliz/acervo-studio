@@ -154,18 +154,23 @@ class ConversationPipeline:
         # ── Step 3: Client handles MCP tools if needed ──
         web_content = ""
         if action == "search" and self._mcp:
-            # Build search query: entity + user's specific question
+            # Build search query: entity + cleaned user question
             base_entity = self._pending_search or prep.plan.entity or prep.topic
-            # If user asked a specific follow-up, combine entity + question
-            if user_asked_search or user_confirmed_search:
-                # "si porfavor" → just search the entity
-                # "busca cuantos libros tiene" → search "Harry Potter cuantos libros tiene"
-                extra = user_text.strip()
-                # Don't include confirmation words in the query
-                if user_confirmed_search and len(msg_words) <= 3:
-                    search_query = base_entity
+
+            if user_confirmed_search:
+                # User said "si" / "dale" → search just the entity
+                search_query = base_entity
+            elif user_asked_search:
+                # User said "busca X" → strip command words, keep the substance
+                _NOISE = _SEARCH_WORDS | _CONFIRM_WORDS_SEARCH | {"en", "de", "que", "lo", "la", "los", "las", "por", "el"}
+                clean_words = [w for w in msg_words if w not in _NOISE]
+                if clean_words:
+                    search_query = f"{base_entity} {' '.join(clean_words)}"
                 else:
-                    search_query = f"{base_entity} {extra}" if base_entity.lower() not in extra.lower() else extra
+                    search_query = base_entity
+            elif is_followup:
+                # Follow-up question → entity + user's question
+                search_query = f"{base_entity} {user_text.strip()}"
             else:
                 search_query = base_entity
 

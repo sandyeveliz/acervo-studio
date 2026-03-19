@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import tomli
+import tomli_w
 from dotenv import load_dotenv
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -141,3 +142,25 @@ def load_settings() -> Settings:
             enabled=raw.get("web_search", {}).get("enabled", True),
         ),
     )
+
+
+def save_settings(updates: dict) -> None:
+    """Merge partial updates into settings.toml and write to disk.
+
+    ``updates`` is a nested dict matching the TOML structure, e.g.
+    ``{"context": {"hot_layer_max_messages": 4}}``.
+    """
+    raw = _load_toml()
+    for section, values in updates.items():
+        if isinstance(values, dict):
+            raw.setdefault(section, {}).update(values)
+        else:
+            raw[section] = values
+    with open(_SETTINGS_PATH, "wb") as f:
+        tomli_w.dump(raw, f)
+
+
+def settings_to_dict(settings: Settings) -> dict:
+    """Serialize a Settings object to a plain dict for JSON responses."""
+    from dataclasses import asdict
+    return asdict(settings)
