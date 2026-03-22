@@ -59,8 +59,9 @@ class PlanResult:
 class QueryPlanner:
     """Uses LLM to plan what information to retrieve before responding."""
 
-    def __init__(self, router: ModelRouter) -> None:
+    def __init__(self, router: ModelRouter, prompt_template: str | None = None) -> None:
         self._router = router
+        self._prompt = prompt_template or _PLANNER_PROMPT
 
     async def plan(
         self,
@@ -89,7 +90,7 @@ class QueryPlanner:
         entity_type: str,
         facts_summary: str,
     ) -> PlanResult:
-        prompt = _PLANNER_PROMPT.format(
+        prompt = self._prompt.format(
             user_message=user_message[:300],
             entity_name=entity_name or "ninguna",
             entity_type=entity_type or "desconocido",

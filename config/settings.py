@@ -41,6 +41,7 @@ class ContextSettings:
     warm_layer_max_tokens: int = 800
     topic_change_embed_threshold: float = 0.65
     compaction_trigger_tokens: int = 2000
+    plan_mode: bool = False
 
 
 @dataclass(frozen=True)
@@ -91,6 +92,18 @@ class TUISettings:
 
 
 @dataclass(frozen=True)
+class AcervoPluginSettings:
+    enabled: bool = False
+    proxy_url: str = "http://localhost:9470/v1"
+    acervo_dir: str = ".acervo"
+
+
+@dataclass(frozen=True)
+class PluginsSettings:
+    acervo: AcervoPluginSettings = field(default_factory=AcervoPluginSettings)
+
+
+@dataclass(frozen=True)
 class Settings:
     lmstudio: LMStudioSettings
     lmstudio_utility: LMStudioSettings
@@ -101,6 +114,7 @@ class Settings:
     pricing: PricingSettings
     tui: TUISettings
     web_search: WebSearchSettings
+    plugins: PluginsSettings
 
 
 def load_settings() -> Settings:
@@ -140,6 +154,9 @@ def load_settings() -> Settings:
             api_key=os.getenv("BRAVE_API_KEY", ""),
             max_results=raw.get("web_search", {}).get("max_results", 5),
             enabled=raw.get("web_search", {}).get("enabled", True),
+        ),
+        plugins=PluginsSettings(
+            acervo=AcervoPluginSettings(**raw.get("plugins", {}).get("acervo", {})),
         ),
     )
 

@@ -23,11 +23,16 @@ log = logging.getLogger(__name__)
 class LMStudioProvider(ModelProvider):
     """Wraps LM Studio's OpenAI-compatible endpoint for chat and streaming."""
 
-    def __init__(self, settings: LMStudioSettings) -> None:
+    def __init__(
+        self,
+        settings: LMStudioSettings,
+        extra_headers: dict[str, str] | None = None,
+    ) -> None:
         self._settings = settings
         self._client = AsyncOpenAI(
             base_url=settings.base_url,
             api_key=settings.api_key,
+            default_headers=extra_headers or {},
         )
 
     async def chat(

@@ -9,7 +9,7 @@ import logging
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from api.serializers import StreamThrottle, serialize_event
-from core.events import PipelineEvent, StreamChunkReceived, StreamCompleted
+from core.events import PipelineEvent, StreamChunkReceived
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -19,13 +19,12 @@ router = APIRouter()
 async def websocket_chat(websocket: WebSocket) -> None:
     await websocket.accept()
 
-    # Get session from app state
-    session = websocket.app.state.session
+    registry = websocket.app.state.registry
+    session = registry.active
     throttle = StreamThrottle(min_interval_ms=30.0)
 
     async def _event_handler(event: PipelineEvent) -> None:
         """Forward pipeline events to the WebSocket client."""
-        # Throttle stream chunks, but always send StreamCompleted
         if isinstance(event, StreamChunkReceived) and not throttle.should_send(event):
             return
         try:
@@ -34,7 +33,12 @@ async def websocket_chat(websocket: WebSocket) -> None:
         except (WebSocketDisconnect, RuntimeError):
             pass
 
-    # Subscribe catch-all handler on PipelineEvent base
+    # Clear any previous WebSocket event handlers (e.g. from StrictMode double-mount)
+    existing = session.bus._handlers.get(PipelineEvent, [])
+    session.bus._handlers[PipelineEvent] = [
+        h for h in existing if not getattr(h, "_is_ws_handler", False)
+    ]
+    _event_handler._is_ws_handler = True  # type: ignore[attr-defined]
     session.bus.subscribe(PipelineEvent, _event_handler)
 
     try:
@@ -62,7 +66,6 @@ async def websocket_chat(websocket: WebSocket) -> None:
                     })
                     continue
 
-                # Run pipeline turn in a task so we can keep receiving
                 throttle.reset()
 
                 async def _run_turn(user_text: str) -> None:
@@ -92,11 +95,22 @@ async def websocket_chat(websocket: WebSocket) -> None:
 
             elif msg_type == "get_stats":
                 await websocket.send_json(session.get_stats())
+                # Send conversation history so the UI can restore messages
+                history_msgs = [
+                    {"role": m.role, "content": m.content}
+                    for m in session.history
+                    if m.role != "system"
+                ]
+                if history_msgs:
+                    await websocket.send_json({
+                        "type": "history_sync",
+                        "messages": history_msgs,
+                    })
 
     except WebSocketDisconnect:
         logger.info("WebSocket client disconnected")
     finally:
-        # Remove the handler from the bus
-        handlers = session.bus._handlers.get(PipelineEvent, [])
-        if _event_handler in handlers:
-            handlers.remove(_event_handler)
+        if session.bus:
+            handlers = session.bus._handlers.get(PipelineEvent, [])
+            if _event_handler in handlers:
+                handlers.remove(_event_handler)

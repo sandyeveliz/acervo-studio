@@ -20,6 +20,7 @@ hot_layer_max_tokens = 500
 warm_layer_max_tokens = 800
 topic_change_embed_threshold = 0.65
 compaction_trigger_tokens = 2000
+plan_mode = false
 
 [graph]
 persist_path = "data/graph"
@@ -34,11 +35,14 @@ sensitive_data_local_only = true
 [pricing]
 lmstudio = 0.0
 ollama = 0.0
-openrouter = 0.000001
-anthropic = 0.000003
+openrouter = 1e-06
+anthropic = 3e-06
 
 [web_search]
 max_results = 5
+enabled = true
+
+[plugins.acervo]
 enabled = true
 
 [tui]

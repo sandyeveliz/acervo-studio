@@ -4,11 +4,15 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { settingsApi, type AppSettings } from "@/lib/api";
 import { ModelSettings } from "@/components/settings/ModelSettings";
-import { ContextSettings } from "@/components/settings/ContextSettings";
-import { GraphSettings } from "@/components/settings/GraphSettings";
-import { WebSearchSettings } from "@/components/settings/WebSearchSettings";
+import { AcervoSettings } from "@/components/settings/AcervoSettings";
+import { McpSettings } from "@/components/settings/McpSettings";
+import { PromptSettings } from "@/components/settings/PromptSettings";
 
-export function SettingsPage() {
+interface SettingsPageProps {
+  onSettingsSaved?: () => void;
+}
+
+export function SettingsPage({ onSettingsSaved }: SettingsPageProps) {
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [draft, setDraft] = useState<Record<string, Record<string, unknown>>>({});
   const [loading, setLoading] = useState(true);
@@ -51,6 +55,7 @@ export function SettingsPage() {
       setDraft({});
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
+      onSettingsSaved?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to save settings");
     } finally {
@@ -93,25 +98,25 @@ export function SettingsPage() {
         <Tabs defaultValue="models">
           <TabsList>
             <TabsTrigger value="models">Models</TabsTrigger>
-            <TabsTrigger value="context">Context</TabsTrigger>
-            <TabsTrigger value="graph">Graph</TabsTrigger>
-            <TabsTrigger value="web_search">Web Search</TabsTrigger>
+            <TabsTrigger value="acervo">Acervo</TabsTrigger>
+            <TabsTrigger value="mcp">MCP</TabsTrigger>
+            <TabsTrigger value="prompt">Prompt</TabsTrigger>
           </TabsList>
 
           <TabsContent value="models" className="mt-4">
             <ModelSettings settings={settings} draft={draft} onUpdate={updateSection} />
           </TabsContent>
 
-          <TabsContent value="context" className="mt-4">
-            <ContextSettings settings={settings} draft={draft} onUpdate={updateSection} />
+          <TabsContent value="acervo" className="mt-4">
+            <AcervoSettings settings={settings} draft={draft} onUpdate={updateSection} />
           </TabsContent>
 
-          <TabsContent value="graph" className="mt-4">
-            <GraphSettings settings={settings} draft={draft} onUpdate={updateSection} />
+          <TabsContent value="mcp" className="mt-4">
+            <McpSettings settings={settings} draft={draft} onUpdate={updateSection} />
           </TabsContent>
 
-          <TabsContent value="web_search" className="mt-4">
-            <WebSearchSettings settings={settings} draft={draft} onUpdate={updateSection} />
+          <TabsContent value="prompt" className="mt-4">
+            <PromptSettings settings={settings} draft={draft} onUpdate={updateSection} />
           </TabsContent>
         </Tabs>
       </div>

@@ -111,6 +111,8 @@ class StreamStarted(PipelineEvent):
     endpoint: str = ""   # "http://localhost:1234/v1"
     history_len: int = 0
     temperature: float = 0.7
+    request_messages: str = ""  # JSON-serialized messages array (truncated for display)
+    actual_llm_request: str = ""  # JSON from proxy: what the LLM actually received (full content)
 
 
 @dataclass(frozen=True)
@@ -193,6 +195,54 @@ class ConfirmationAccepted(PipelineEvent):
 class TrainingSampleSaved(PipelineEvent):
     sample_type: str = ""  # correction | confirmation | rejection
     entity: str = ""
+
+
+# ── Tool use ──
+
+@dataclass(frozen=True)
+class ToolCallRequested(PipelineEvent):
+    tool: str = ""
+    arguments: str = ""  # JSON string of arguments
+
+@dataclass(frozen=True)
+class ToolCallCompleted(PipelineEvent):
+    tool: str = ""
+    arguments: str = ""  # JSON string of arguments
+    result_preview: str = ""
+
+
+# ── Acervo proxy ──
+
+@dataclass(frozen=True)
+class AcervoRequestSent(PipelineEvent):
+    """Request routed through Acervo proxy."""
+    proxy_url: str = ""
+    message_count: int = 0
+
+
+@dataclass(frozen=True)
+class AcervoEnrichResult(PipelineEvent):
+    """Enrichment result from Acervo proxy."""
+    enriched: bool = False
+    topic: str = ""
+    warm_tokens: int = 0
+    stages: tuple = ()  # human-readable stage logs from Acervo pipeline
+    stage_data: str = ""  # JSON-encoded per-stage debug data from Acervo
+    entities_extracted: int = 0
+    facts_extracted: int = 0
+
+
+# ── Conversational indexing ──
+
+@dataclass(frozen=True)
+class ConversationIndexed(PipelineEvent):
+    """Post-LLM: knowledge extracted and persisted to graph."""
+    topic: str = ""
+    entities_extracted: int = 0
+    facts_extracted: int = 0
+    placeholder_promoted: bool = False
+    source: str = ""       # "conversation" | "tool_result"
+    verified: bool = False
 
 
 # ── Errors ──

@@ -4,24 +4,27 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Trash2, X, Merge, ArrowRight } from "lucide-react";
-import type { GraphNode } from "@/lib/api";
+import { Trash2, X, Merge, ArrowRight, Copy, Check } from "lucide-react";
+import type { GraphNode, GraphEdge } from "@/lib/api";
 
 interface NodeDetailPanelProps {
   node: GraphNode | null;
   allNodes: GraphNode[];
+  edges: GraphEdge[];
   onClose: () => void;
   onDeleteNode: (nodeId: string) => void;
   onDeleteFact: (nodeId: string, fact: string) => void;
   onMerge: (keepId: string, absorbId: string, alias: string | null) => void;
+  onSelectNode: (nodeId: string) => void;
 }
 
-export function NodeDetailPanel({ node, allNodes, onClose, onDeleteNode, onDeleteFact, onMerge }: NodeDetailPanelProps) {
+export function NodeDetailPanel({ node, allNodes, edges, onClose, onDeleteNode, onDeleteFact, onMerge, onSelectNode }: NodeDetailPanelProps) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [mergeMode, setMergeMode] = useState(false);
   const [mergeTarget, setMergeTarget] = useState<string>("");
   const [mergeSearch, setMergeSearch] = useState("");
   const [mergeAlias, setMergeAlias] = useState("");
+  const [copied, setCopied] = useState(false);
 
   if (!node) {
     return (
@@ -48,9 +51,9 @@ export function NodeDetailPanel({ node, allNodes, onClose, onDeleteNode, onDelet
           <div>
             <h3 className="text-lg font-medium">{node.label}</h3>
             <div className="flex gap-1.5 mt-1">
-              <Badge variant="outline" className="text-[10px]">{node.type}</Badge>
-              {node.layer && <Badge variant="secondary" className="text-[10px]">{node.layer}</Badge>}
-              {node.status && <Badge variant="secondary" className="text-[10px]">{node.status}</Badge>}
+              <Badge variant="outline" className="text-[12px]">{node.type}</Badge>
+              {node.layer && <Badge variant="secondary" className="text-[12px]">{node.layer}</Badge>}
+              {node.status && <Badge variant="secondary" className="text-[12px]">{node.status}</Badge>}
             </div>
           </div>
           <Button variant="ghost" size="sm" onClick={onClose} className="h-7 w-7 p-0">
@@ -117,6 +120,84 @@ export function NodeDetailPanel({ node, allNodes, onClose, onDeleteNode, onDelet
           </CardContent>
         </Card>
 
+        {/* Edges */}
+        {node && (() => {
+          const nodeEdges = edges.filter(
+            (e) => e.source === node.id || e.target === node.id,
+          );
+          return (
+            <Card>
+              <CardHeader className="pb-2 pt-3 px-3">
+                <CardTitle className="text-xs font-medium text-muted-foreground">
+                  Edges ({nodeEdges.length})
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="px-3 pb-3 space-y-1">
+                {nodeEdges.length === 0 && (
+                  <p className="text-xs text-muted-foreground">No edges (orphan)</p>
+                )}
+                {nodeEdges.slice(0, 20).map((e, i) => {
+                  const isSource = e.source === node.id;
+                  const otherId = isSource ? e.target : e.source;
+                  const otherNode = allNodes.find((n) => n.id === otherId);
+                  return (
+                    <div key={i} className="flex items-center gap-1.5 text-xs">
+                      {isSource ? (
+                        <>
+                          <span className="text-muted-foreground">{e.relation}</span>
+                          <ArrowRight size={10} className="text-muted-foreground" />
+                          <button
+                            onClick={() => onSelectNode(otherId)}
+                            className="text-primary underline cursor-pointer hover:text-primary/80 truncate"
+                          >
+                            {otherNode?.label ?? otherId}
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <button
+                            onClick={() => onSelectNode(otherId)}
+                            className="text-primary underline cursor-pointer hover:text-primary/80 truncate"
+                          >
+                            {otherNode?.label ?? otherId}
+                          </button>
+                          <ArrowRight size={10} className="text-muted-foreground" />
+                          <span className="text-muted-foreground">{e.relation}</span>
+                        </>
+                      )}
+                      {e.layer && (
+                        <Badge variant="outline" className="text-[9px] ml-auto shrink-0">
+                          {e.layer}
+                        </Badge>
+                      )}
+                    </div>
+                  );
+                })}
+                {nodeEdges.length > 20 && (
+                  <p className="text-[11px] text-muted-foreground">
+                    +{nodeEdges.length - 20} more
+                  </p>
+                )}
+              </CardContent>
+            </Card>
+          );
+        })()}
+
+        {/* Copy JSON */}
+        <Button
+          variant="outline"
+          size="sm"
+          className="w-full text-xs"
+          onClick={() => {
+            navigator.clipboard.writeText(JSON.stringify(node, null, 2));
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1500);
+          }}
+        >
+          {copied ? <Check size={12} className="mr-1.5" /> : <Copy size={12} className="mr-1.5" />}
+          {copied ? "Copied" : "Copy JSON"}
+        </Button>
+
         {/* Merge */}
         <Card>
           <CardHeader className="pb-2 pt-3 px-3">
@@ -138,7 +219,7 @@ export function NodeDetailPanel({ node, allNodes, onClose, onDeleteNode, onDelet
               </Button>
             ) : (
               <div className="space-y-3">
-                <p className="text-[11px] text-muted-foreground">
+                <p className="text-[13px] text-muted-foreground">
                   Select a node to absorb into <strong>{node.label}</strong>. Its facts and edges will be merged, and it will be deleted.
                 </p>
 
@@ -167,7 +248,7 @@ export function NodeDetailPanel({ node, allNodes, onClose, onDeleteNode, onDelet
                     </button>
                   ))}
                   {filteredMergeTargets.length === 0 && (
-                    <p className="text-[11px] text-muted-foreground px-2.5 py-2">No matching nodes</p>
+                    <p className="text-[13px] text-muted-foreground px-2.5 py-2">No matching nodes</p>
                   )}
                 </div>
 

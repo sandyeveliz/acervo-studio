@@ -13,7 +13,7 @@ export function SettingsField({ label, description, children, modified }: Settin
       <div className="flex-1 min-w-0">
         <label className={cn("text-sm font-medium", modified && "text-primary")}>
           {label}
-          {modified && <span className="ml-1.5 text-[10px] text-primary">(modified)</span>}
+          {modified && <span className="ml-1.5 text-[12px] text-primary">(modified)</span>}
         </label>
         {description && <p className="text-xs text-muted-foreground mt-0.5">{description}</p>}
       </div>

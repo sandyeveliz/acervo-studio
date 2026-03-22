@@ -78,10 +78,17 @@ class ModelRouter:
         max_tokens: int | None = None,
         tools: list[dict] | None = None,
         force_local: bool = False,
+        base_url_override: str | None = None,
     ) -> ChatResponse:
-        """Chat with the main model (Qwen 3.5 9B)."""
+        """Chat with the main model (Qwen 3.5 9B).
+
+        Args:
+            base_url_override: If set, route the request through this URL
+                               (e.g. Acervo proxy) instead of the default LM Studio endpoint.
+        """
         self._active_provider = "lmstudio"
-        response = await self._lmstudio.chat(
+        provider = self._get_provider_for_url(base_url_override) if base_url_override else self._lmstudio
+        response = await provider.chat(
             messages,
             temperature=temperature,
             max_tokens=max_tokens,
@@ -125,10 +132,12 @@ class ModelRouter:
         *,
         temperature: float = 0.7,
         max_tokens: int | None = None,
+        base_url_override: str | None = None,
     ) -> AsyncIterator[StreamChunk]:
         self._active_provider = "lmstudio"
+        provider = self._get_provider_for_url(base_url_override) if base_url_override else self._lmstudio
         chunk_count = 0
-        async for chunk in self._lmstudio.chat_stream(
+        async for chunk in provider.chat_stream(
             messages,
             temperature=temperature,
             max_tokens=max_tokens,
@@ -137,6 +146,23 @@ class ModelRouter:
                 chunk_count += 1
             yield chunk
         self.usage.record(0, chunk_count)
+
+    def _get_provider_for_url(self, base_url: str) -> LMStudioProvider:
+        """Get or create a provider for a custom base URL (e.g. Acervo proxy).
+
+        Sends X-Forward-To header with the original LM Studio URL so the proxy
+        knows where to forward the enriched request.
+        """
+        if not hasattr(self, "_override_providers"):
+            self._override_providers: dict[str, LMStudioProvider] = {}
+        if base_url not in self._override_providers:
+            from dataclasses import replace
+            override_settings = replace(self._settings.lmstudio, base_url=base_url)
+            self._override_providers[base_url] = LMStudioProvider(
+                override_settings,
+                extra_headers={"X-Forward-To": self._settings.lmstudio.base_url},
+            )
+        return self._override_providers[base_url]
 
     async def embed(self, text: str) -> EmbedResponse:
         resp = await self._ollama.embed(text)
@@ -147,3 +173,5 @@ class ModelRouter:
         await self._lmstudio.close()
         await self._utility.close()
         await self._ollama.close()
+        for provider in getattr(self, "_override_providers", {}).values():
+            await provider.close()

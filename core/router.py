@@ -7,6 +7,9 @@ Routes:
 - ask: ask user for clarification (future — returns static for now).
 
 The decision is made BEFORE the LLM call. The model only sees the result.
+
+NOTE: This module is currently unused — routing is handled by the query planner
+inside Acervo's prepare() pipeline. Kept for potential future use.
 """
 
 from __future__ import annotations
@@ -14,8 +17,6 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from enum import Enum
-
-from acervo.graph import TopicGraph, _make_id
 
 
 class Route(Enum):
@@ -32,27 +33,32 @@ _SEARCH_PATTERNS = re.compile(
 )
 
 
-def decide_route(user_msg: str, current_topic: str, graph: TopicGraph) -> tuple[Route, str]:
-    """Decide the pre-LLM route based on message and graph state.
+def decide_route(user_msg: str, current_topic: str, memory=None) -> tuple[Route, str]:
+    """Decide the pre-LLM route based on message and memory state.
+
+    Args:
+        memory: Acervo instance (optional). If None, always returns STATIC.
 
     Returns (route, reason) tuple.
     """
+    if memory is None:
+        return Route.STATIC, "no memory available"
+
     if current_topic != "none":
-        topic_id = _make_id(current_topic)
-        node = graph.get_node(topic_id)
+        node = memory.lookup_node(current_topic)
 
         # Topic exists with verified facts → use memory
         if node and node.get("facts"):
             return Route.MEMORY, f"topic '{current_topic}' has {len(node['facts'])} facts"
 
         # Check if any active nodes have facts
-        hot_nodes = graph.get_nodes_by_status("hot")
-        warm_nodes = graph.get_nodes_by_status("warm")
+        hot_nodes = memory.graph.get_nodes_by_status("hot")
+        warm_nodes = memory.graph.get_nodes_by_status("warm")
         active_nodes = [n for n in hot_nodes + warm_nodes if n.get("facts")]
         if active_nodes:
             return Route.MEMORY, f"{len(active_nodes)} active nodes with facts"
 
-        # Topic exists but NO verified facts → ask user, don't guess
+        # Topic exists but NO verified facts
         if node:
             return Route.ASK, f"topic '{current_topic}' exists but has no verified facts"
 

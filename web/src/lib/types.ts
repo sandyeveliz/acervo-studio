@@ -110,6 +110,19 @@ export interface GraphUpdatedEvent extends WsEvent {
   edge_count: number;
 }
 
+export interface ToolCallRequestedEvent extends WsEvent {
+  type: "tool_call_requested";
+  tool: string;
+  arguments: string;
+}
+
+export interface ToolCallCompletedEvent extends WsEvent {
+  type: "tool_call_completed";
+  tool: string;
+  arguments: string;
+  result_preview: string;
+}
+
 export interface PipelineErrorEvent extends WsEvent {
   type: "pipeline_error";
   step: string;
@@ -122,14 +135,17 @@ export interface TurnCompleteEvent extends WsEvent {
 
 export interface StatsEvent extends WsEvent {
   type: "stats";
+  session_name: string;
   model: string;
   utility_model: string;
   turns: number;
   history_len: number;
-  node_count: number;
-  edge_count: number;
   mcp_active: boolean;
+  mcp_servers?: { name: string; status: string; error: string }[];
+  acervo_enabled?: boolean;
 }
+
+
 
 // ── App state types ──
 
@@ -145,6 +161,7 @@ export interface PipelineStep {
   label: string;
   detail: string;
   timestamp: string;
+  raw: Record<string, unknown>;
 }
 
 export interface StepGroup {
@@ -152,16 +169,82 @@ export interface StepGroup {
   steps: PipelineStep[];
 }
 
+export interface McpServer {
+  name: string;
+  status: string;
+  error: string;
+}
+
 export interface SessionStats {
+  session_name?: string;
   model: string;
   utility_model: string;
   turns: number;
   history_len: number;
-  node_count: number;
-  edge_count: number;
   mcp_active: boolean;
+  mcp_servers?: McpServer[];
+  acervo_enabled?: boolean;
   last_latency_ms?: number;
   last_ttft_ms?: number;
   last_speed_tps?: number;
   last_completion_tokens?: number;
+  last_context?: {
+    hot_messages: number;
+    hot_tokens: number;
+    warm_tokens: number;
+    total_tokens: number;
+  };
+}
+
+export interface TurnMetric {
+  turn_number: number;
+  timestamp: string;
+  warm_tokens: number;
+  hot_tokens: number;
+  total_context_tokens: number;
+  node_count: number;
+  edge_count: number;
+  nodes_activated: number;
+  entities_extracted: number;
+  facts_added: number;
+  facts_deduped: number;
+  topic: string;
+  plan_tool: string;
+  context_hit: boolean;
+}
+
+export interface TurnLogEntry {
+  turn: number;
+  timestamp: string;
+  session: string;
+  user_input: string;
+  assistant_response?: string;
+  topic?: string;
+  topic_confidence?: number;
+  planner?: { tool: string; entity: string; query: string };
+  decision?: { action: string; has_context: boolean };
+  executor?: { source: string; node_count: number; fact_count: number };
+  context?: { hot_messages: number; hot_tokens: number; warm_tokens: number; total_tokens: number; warm_topic: string };
+  llm?: { model: string; completion_tokens: number; latency_ms: number; speed_tps: number; skipped: boolean };
+  extraction?: { entities: [string, string][]; error?: string | null };
+  facts_filtered?: { entity: string; fact: string; reason: string }[];
+  graph_after?: { node_count: number; edge_count: number };
+  errors?: { step: string; error: string }[];
+}
+
+export interface MetricsData {
+  session_id: string;
+  started_at: string;
+  turn_count: number;
+  aggregates: {
+    avg_total_tokens: number;
+    avg_warm_tokens: number;
+    context_hit_rate: number;
+    graph_growth_rate: number;
+    fact_density: number;
+    total_entities_extracted: number;
+    total_facts_added: number;
+    total_facts_deduped: number;
+  };
+  turns: TurnMetric[];
 }

@@ -47,6 +47,47 @@ export interface GraphStats {
   type_distribution: Record<string, number>;
 }
 
+export interface QualityIssue {
+  type: "duplicate" | "leakage" | "orphan" | "unknown_type" | "empty_facts";
+  severity: "warning" | "info";
+  message: string;
+  reason: string;
+  node_ids: string[];
+  nodes: GraphNode[];
+}
+
+export interface ExtractionEvent {
+  timestamp: string;
+  turn: number;
+  user_message_preview: string;
+  component: string;
+  action: string;
+  node_label: string;
+  node_type: string | null;
+  source: string;
+  details?: Record<string, unknown>;
+}
+
+export interface GraphAnalysisStats {
+  total_nodes: number;
+  total_edges: number;
+  by_source: Record<string, number>;
+  by_type: Record<string, number>;
+  by_kind: Record<string, number>;
+  by_status: Record<string, number>;
+  verified_count: number;
+  unverified_count: number;
+  placeholder_count: number;
+  issue_count: number;
+}
+
+export interface GraphAnalysis {
+  issues: QualityIssue[];
+  stats: GraphAnalysisStats;
+  extraction_log: ExtractionEvent[];
+  system_prompt_preview: string;
+}
+
 export const graphApi = {
   getNodes: (type?: string) =>
     request<{ nodes: GraphNode[] }>(`/graph/nodes${type ? `?type=${type}` : ""}`),
@@ -54,46 +95,73 @@ export const graphApi = {
   getNode: (id: string) =>
     request<GraphNode>(`/graph/nodes/${id}`),
 
-  getNeighbors: (id: string, maxCount = 10) =>
-    request<{ neighbors: { node: GraphNode; weight: number }[] }>(
-      `/graph/nodes/${id}/neighbors?max_count=${maxCount}`,
-    ),
-
   getEdges: (nodeId?: string) =>
     request<{ edges: GraphEdge[] }>(`/graph/edges${nodeId ? `?node_id=${nodeId}` : ""}`),
 
   getStats: () =>
     request<GraphStats>("/graph/stats"),
 
-  deleteNode: (id: string) =>
-    request<{ removed: boolean }>(`/graph/nodes/${id}`, { method: "DELETE" }),
-
-  deleteFact: (nodeId: string, fact: string) =>
-    request<{ removed: boolean }>(`/graph/nodes/${nodeId}/facts`, {
-      method: "DELETE",
-      body: JSON.stringify({ fact }),
-    }),
-
-  updateNode: (id: string, fields: { label?: string; type?: string; attributes?: Record<string, unknown> }) =>
-    request<GraphNode>(`/graph/nodes/${id}`, {
-      method: "PATCH",
-      body: JSON.stringify(fields),
-    }),
-
   exportGraph: () =>
     request<{ nodes: GraphNode[]; edges: GraphEdge[] }>("/graph/export"),
 
+  deleteNode: (nodeId: string) =>
+    request<{ deleted: boolean; node_id: string }>(`/graph/nodes/${nodeId}`, {
+      method: "DELETE",
+    }),
+
+  deleteFact: (nodeId: string, fact: string) =>
+    request<GraphNode>(`/graph/nodes/${nodeId}/facts?fact=${encodeURIComponent(fact)}`, {
+      method: "DELETE",
+    }),
+
+  mergeNodes: (keepId: string, absorbId: string, alias?: string) =>
+    request<{ merged: boolean }>("/graph/merge", {
+      method: "POST",
+      body: JSON.stringify({ keep_id: keepId, absorb_id: absorbId, alias }),
+    }),
+
   importGraph: (data: { nodes: GraphNode[]; edges: GraphEdge[] }) =>
-    request<{ imported: boolean; node_count: number; edge_count: number }>("/graph/import", {
+    request<{ imported: boolean }>("/graph/import", {
       method: "POST",
       body: JSON.stringify(data),
     }),
 
-  mergeNodes: (keepId: string, absorbId: string, alias?: string) =>
-    request<{ merged: boolean; kept: string; absorbed: string }>("/graph/merge", {
-      method: "POST",
-      body: JSON.stringify({ keep_id: keepId, absorb_id: absorbId, alias }),
+  getAnalysis: () =>
+    request<GraphAnalysis>("/graph/analysis"),
+};
+
+// ── MCP ──
+
+export interface McpServer {
+  name: string;
+  status: string;
+  error: string;
+}
+
+export const mcpApi = {
+  getStatus: () => request<{ servers: McpServer[] }>("/mcp/status"),
+
+  getConfig: () => request<{ config: Record<string, unknown> }>("/mcp/config"),
+
+  saveConfig: (config: Record<string, unknown>) =>
+    request<{ saved: boolean }>("/mcp/config", {
+      method: "PUT",
+      body: JSON.stringify({ config }),
     }),
+
+  probe: () =>
+    request<{ servers: McpServer[] }>("/mcp/probe", { method: "POST" }),
+};
+
+// ── Turn Log ──
+
+import type { TurnLogEntry } from "./types";
+
+export const turnLogApi = {
+  getTurns: (session: string, last?: number) =>
+    request<{ turns: TurnLogEntry[] }>(
+      `/sessions/${session}/turns${last ? `?last=${last}` : ""}`,
+    ),
 };
 
 // ── Settings ──
@@ -123,6 +191,7 @@ export interface AppSettings {
     warm_layer_max_tokens: number;
     topic_change_embed_threshold: number;
     compaction_trigger_tokens: number;
+    plan_mode: boolean;
   };
   graph: {
     persist_path: string;
@@ -144,6 +213,13 @@ export interface AppSettings {
     max_results: number;
     enabled: boolean;
   };
+  plugins: {
+    acervo: {
+      enabled: boolean;
+      proxy_url: string;
+      acervo_dir: string;
+    };
+  };
 }
 
 export const settingsApi = {
@@ -153,6 +229,98 @@ export const settingsApi = {
     request<{ saved: boolean; settings: AppSettings }>("/settings", {
       method: "PUT",
       body: JSON.stringify(updates),
+    }),
+};
+
+// ── Acervo Plugin ──
+
+export interface AcervoProxyStatus {
+  status: "active" | "pass-through" | "disabled" | "disconnected";
+  turns?: number;
+  changelog_entries?: number;
+  target?: string;
+  graph?: { node_count: number; edge_count: number };
+  error?: string;
+}
+
+export interface AcervoGraphInfo {
+  node_count: number;
+  edge_count: number;
+  nodes_by_type: Record<string, number>;
+  acervo_dir: string;
+  initialized: boolean;
+}
+
+export interface AcervoConfigData {
+  initialized: boolean;
+  model?: { name: string; url: string; api_key: string };
+  embeddings?: { url: string; model: string; api_key: string };
+  proxy?: { port: number; target: string };
+  context?: { max_tokens: number; injection: string };
+}
+
+export interface ContextLayerNode {
+  id: string;
+  label: string;
+  type: string;
+  kind: string;
+  source: string;
+  verified: boolean;
+  status: string;
+  token_count: number;
+  last_active: string;
+  facts_count: number;
+  edges_count: number;
+}
+
+export interface ContextLayersResponse {
+  layers: {
+    hot: { nodes: ContextLayerNode[]; total_tokens: number };
+    warm: { nodes: ContextLayerNode[]; total_tokens: number };
+    cold: { nodes: ContextLayerNode[]; total_tokens: number };
+  };
+  totals: {
+    nodes: number;
+    edges: number;
+    hot_tokens: number;
+    warm_tokens: number;
+    cold_tokens: number;
+  };
+}
+
+export const acervoApi = {
+  getStatus: () =>
+    request<AcervoProxyStatus>("/plugins/acervo/status"),
+
+  getChangelog: () =>
+    request<{ changelog: { timestamp: string; action: string; tool: string; file: string }[] }>(
+      "/plugins/acervo/changelog",
+    ),
+
+  testConnection: () =>
+    request<{ ok: boolean; message: string; graph?: { node_count: number; edge_count: number } }>(
+      "/plugins/acervo/test",
+      { method: "POST" },
+    ),
+
+  getGraphInfo: () =>
+    request<AcervoGraphInfo>("/plugins/acervo/graph-info"),
+
+  getConfig: () =>
+    request<AcervoConfigData>("/plugins/acervo/config"),
+
+  updateConfig: (updates: Record<string, Record<string, unknown>>) =>
+    request<{ saved: boolean }>("/plugins/acervo/config", {
+      method: "PUT",
+      body: JSON.stringify(updates),
+    }),
+
+  getContextLayers: () =>
+    request<ContextLayersResponse>("/plugins/acervo/context-layers"),
+
+  clearData: () =>
+    request<{ cleared: boolean; path: string }>("/plugins/acervo/data", {
+      method: "DELETE",
     }),
 };
 
@@ -185,5 +353,15 @@ export const agentsApi = {
   delete: (name: string) =>
     request<{ deleted: boolean; name: string }>(`/agents/${name}`, {
       method: "DELETE",
+    }),
+};
+
+export const systemPromptApi = {
+  get: () => request<{ prompt: string; default: string }>("/system-prompt"),
+
+  update: (prompt: string) =>
+    request<{ saved: boolean }>("/system-prompt", {
+      method: "PUT",
+      body: JSON.stringify({ content: prompt }),
     }),
 };

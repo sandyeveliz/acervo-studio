@@ -6,7 +6,6 @@ import type {
   StepGroup,
   WsEvent,
   StreamCompletedEvent,
-  GraphUpdatedEvent,
   StatsEvent,
 } from "@/lib/types";
 import { getEventLabel } from "@/lib/eventNames";
@@ -28,8 +27,6 @@ const INITIAL_STATS: SessionStats = {
   utility_model: "",
   turns: 0,
   history_len: 0,
-  node_count: 0,
-  edge_count: 0,
   mcp_active: false,
 };
 
@@ -60,11 +57,12 @@ function nextId(): string {
 // Events to skip in the pipeline step display
 const SKIP_STEP_EVENTS = new Set([
   "stream_chunk_received",
-  "stream_started",
   "turn_complete",
   "reset_complete",
   "stats",
   "error",
+  "session_switched",
+  "history_sync",
 ]);
 
 function reducer(state: ChatState, action: Action): ChatState {
@@ -125,14 +123,6 @@ function reducer(state: ChatState, action: Action): ChatState {
           };
         }
 
-        case "graph_updated": {
-          const e = evt as GraphUpdatedEvent;
-          return {
-            ...state,
-            stats: { ...state.stats, node_count: e.node_count, edge_count: e.edge_count },
-          };
-        }
-
         case "turn_complete":
           return {
             ...state,
@@ -148,18 +138,75 @@ function reducer(state: ChatState, action: Action): ChatState {
           };
         }
 
+        case "history_sync": {
+          // Restore conversation history from the backend
+          const e = evt as unknown as { messages: { role: string; content: string }[] };
+          const restored: Message[] = [];
+          const restoredGroups: StepGroup[] = [];
+          for (const m of e.messages) {
+            restored.push({
+              id: nextId(),
+              role: m.role as "user" | "assistant",
+              content: m.content,
+              timestamp: new Date().toISOString(),
+            });
+            // Create an empty step group for each user message
+            if (m.role === "user") {
+              restoredGroups.push({ turnId: `turn_${_nextId}`, steps: [] });
+            }
+          }
+          return {
+            ...state,
+            messages: restored,
+            pipelineSteps: restoredGroups,
+          };
+        }
+
         case "reset_complete":
           return { ...INITIAL_STATE, connected: state.connected };
+
+        case "context_built": {
+          const cb = evt as unknown as Record<string, unknown>;
+          const { type: _ct, timestamp: _cts, ...cbRaw } = cb;
+          const cbStep: PipelineStep = {
+            type: evt.type,
+            label: getEventLabel(evt.type),
+            detail: formatStepDetail(evt),
+            timestamp: evt.timestamp ?? new Date().toISOString(),
+            raw: cbRaw as Record<string, unknown>,
+          };
+          const cbGroups = [...state.pipelineSteps];
+          if (cbGroups.length > 0) {
+            const cbLast = { ...cbGroups[cbGroups.length - 1] };
+            cbLast.steps = [...cbLast.steps, cbStep];
+            cbGroups[cbGroups.length - 1] = cbLast;
+          }
+          return {
+            ...state,
+            pipelineSteps: cbGroups,
+            stats: {
+              ...state.stats,
+              last_context: {
+                hot_messages: cb.hot_messages as number,
+                hot_tokens: cb.hot_tokens as number,
+                warm_tokens: cb.warm_tokens as number,
+                total_tokens: cb.total_tokens as number,
+              },
+            },
+          };
+        }
 
         default: {
           // Add as pipeline step if not a skipped event
           if (SKIP_STEP_EVENTS.has(evt.type)) return state;
 
+          const { type: _t, timestamp: _ts, ...rawFields } = evt as Record<string, unknown>;
           const step: PipelineStep = {
             type: evt.type,
             label: getEventLabel(evt.type),
             detail: formatStepDetail(evt),
             timestamp: evt.timestamp ?? new Date().toISOString(),
+            raw: rawFields as Record<string, unknown>,
           };
 
           const groups = [...state.pipelineSteps];
@@ -184,28 +231,51 @@ function reducer(state: ChatState, action: Action): ChatState {
 function formatStepDetail(evt: WsEvent): string {
   const e = evt as unknown as Record<string, unknown>;
   switch (evt.type) {
-    case "topic_detect_step":
-      return `${e.verdict} (L${e.level}, conf=${(e.confidence as number)?.toFixed(2)})${e.current_topic ? ` topic="${e.current_topic}"` : ""}`;
-    case "topic_changed":
-      return `→ "${e.new_topic}"`;
-    case "planner_decision":
-      return `${e.tool} · ${e.entity}${e.query ? ` · "${e.query}"` : ""}`;
-    case "acervo_decision":
-      return `action=${e.action} context=${e.has_context ? "yes" : "no"}`;
-    case "executor_result":
-      return `${e.source}: ${e.node_count} nodes, ${e.fact_count} facts`;
-    case "context_built":
-      return `hot=${e.hot_tokens}tk warm=${e.warm_tokens}tk total=${e.total_tokens}tk`;
-    case "extraction_completed":
-      return (e.entities as [string, string][])?.map(([n, t]) => `${n} (${t})`).join(", ") || "none";
-    case "graph_updated":
-      return `${e.node_count} nodes, ${e.edge_count} edges`;
+    case "message_received": {
+      const tk = e.msg_tokens as number | undefined;
+      return tk ? `${tk}tk message, ${e.history_len} messages in history` : "";
+    }
+    case "context_built": {
+      const total = e.total_tokens as number;
+      const warm = e.warm_topic as string;
+      if (warm) return `${total}tk sent to proxy for enrichment`;
+      return `${total}tk context prepared (${e.hot_messages} messages)`;
+    }
+    case "acervo_request_sent":
+      return `${e.message_count} messages routed to Acervo proxy`;
+    case "acervo_enrich_result": {
+      if (e.enriched) {
+        return `+${e.warm_tokens}tk from memory, topic: "${e.topic}"`;
+      }
+      return e.topic
+        ? `No context found for "${e.topic}" — LLM will use general knowledge`
+        : "No context injected — LLM will use general knowledge";
+    }
+    case "stream_started": {
+      const tk = e.history_len as number;
+      return `${tk} messages, temp=${e.temperature}`;
+    }
+    case "stream_completed": {
+      const tokens = e.completion_tokens as number;
+      const speed = (e.speed_tps as number)?.toFixed(1);
+      const latency = ((e.latency_ms as number) / 1000).toFixed(1);
+      return `${tokens} tokens in ${latency}s (${speed} t/s)`;
+    }
+    case "tool_call_requested":
+      return `LLM calling ${e.tool}`;
+    case "tool_call_completed": {
+      const preview = (e.result_preview as string) ?? "";
+      const short = preview.length > 80 ? preview.slice(0, 80) + "..." : preview;
+      return `${e.tool} returned: ${short}`;
+    }
+    case "conversation_indexed": {
+      const ent = e.entities_extracted as number;
+      const facts = e.facts_extracted as number;
+      if (ent === 0 && facts === 0) return "No new knowledge in response — graph unchanged";
+      return `Extracted ${ent} entities, ${facts} facts`;
+    }
     case "pipeline_error":
-      return `[${e.step}] ${e.error}`;
-    case "fact_filtered":
-      return `${e.entity}: "${e.fact}" (${e.reason})`;
-    case "compaction_completed":
-      return e.compacted ? `compacted (overflow: ${e.overflow_tokens}tk)` : "skipped";
+      return `${e.error}`;
     default:
       return "";
   }
@@ -279,9 +349,15 @@ export function useWebSocket() {
     wsRef.current.send(JSON.stringify({ type: "reset" }));
   }, []);
 
+  const requestStats = useCallback(() => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    wsRef.current.send(JSON.stringify({ type: "get_stats" }));
+  }, []);
+
   return {
     ...state,
     sendMessage,
     resetSession,
+    requestStats,
   };
 }

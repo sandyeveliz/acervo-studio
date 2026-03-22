@@ -27,7 +27,7 @@ export function ModelSettings({ settings, draft, onUpdate }: ModelSettingsProps)
         <CardHeader className="pb-2">
           <CardTitle className="text-sm flex items-center gap-2">
             Main Model (Chat)
-            <Badge variant="outline" className="text-[10px]">Restart required</Badge>
+            <Badge variant="outline" className="text-[12px]">Restart required</Badge>
           </CardTitle>
         </CardHeader>
         <CardContent className="divide-y divide-border">
@@ -63,61 +63,80 @@ export function ModelSettings({ settings, draft, onUpdate }: ModelSettingsProps)
 
       <Card>
         <CardHeader className="pb-2">
-          <CardTitle className="text-sm flex items-center gap-2">
-            Utility Model (Extraction/Planning)
-            <Badge variant="outline" className="text-[10px]">Restart required</Badge>
-          </CardTitle>
+          <CardTitle className="text-sm">Context Window Budget</CardTitle>
         </CardHeader>
         <CardContent className="divide-y divide-border">
-          <SettingsField label="Base URL" modified={isModified(draft, "lmstudio_utility", "base_url")}>
-            <TextField
-              value={getVal(settings, draft, "lmstudio_utility", "base_url", "")}
-              onChange={(v) => onUpdate("lmstudio_utility", "base_url", v)}
-            />
-          </SettingsField>
-          <SettingsField label="Model" modified={isModified(draft, "lmstudio_utility", "model")}>
-            <TextField
-              value={getVal(settings, draft, "lmstudio_utility", "model", "")}
-              onChange={(v) => onUpdate("lmstudio_utility", "model", v)}
-            />
-          </SettingsField>
-          <SettingsField label="Context Window" modified={isModified(draft, "lmstudio_utility", "context_window")}>
+          <SettingsField
+            label="Hot Layer Max Messages"
+            description="Recent conversation turns to keep"
+            modified={isModified(draft, "context", "hot_layer_max_messages")}
+          >
             <NumberField
-              value={getVal(settings, draft, "lmstudio_utility", "context_window", 32000)}
-              onChange={(v) => onUpdate("lmstudio_utility", "context_window", v)}
-              min={1024}
-              max={131072}
-              step={1024}
+              value={getVal(settings, draft, "context", "hot_layer_max_messages", 2)}
+              onChange={(v) => onUpdate("context", "hot_layer_max_messages", v)}
+              min={0}
+              max={10}
             />
           </SettingsField>
-          <SettingsField label="KV Cache" modified={isModified(draft, "lmstudio_utility", "kv_cache")}>
-            <ToggleField
-              value={getVal(settings, draft, "lmstudio_utility", "kv_cache", false)}
-              onChange={(v) => onUpdate("lmstudio_utility", "kv_cache", v)}
+
+          <SettingsField
+            label="Hot Layer Max Tokens"
+            description="Token budget for recent messages"
+            modified={isModified(draft, "context", "hot_layer_max_tokens")}
+          >
+            <NumberField
+              value={getVal(settings, draft, "context", "hot_layer_max_tokens", 500)}
+              onChange={(v) => onUpdate("context", "hot_layer_max_tokens", v)}
+              min={100}
+              max={4000}
+              step={100}
+            />
+          </SettingsField>
+
+          <SettingsField
+            label="Warm Layer Max Tokens"
+            description="Token budget for graph context"
+            modified={isModified(draft, "context", "warm_layer_max_tokens")}
+          >
+            <NumberField
+              value={getVal(settings, draft, "context", "warm_layer_max_tokens", 800)}
+              onChange={(v) => onUpdate("context", "warm_layer_max_tokens", v)}
+              min={200}
+              max={4000}
+              step={100}
+            />
+          </SettingsField>
+
+          <SettingsField
+            label="Topic Change Threshold"
+            description="Embedding similarity threshold for topic changes (0-1)"
+            modified={isModified(draft, "context", "topic_change_embed_threshold")}
+          >
+            <NumberField
+              value={getVal(settings, draft, "context", "topic_change_embed_threshold", 0.65)}
+              onChange={(v) => onUpdate("context", "topic_change_embed_threshold", v)}
+              min={0.1}
+              max={1.0}
+              step={0.05}
+            />
+          </SettingsField>
+
+          <SettingsField
+            label="Compaction Trigger Tokens"
+            description="Total budget target for the context stack"
+            modified={isModified(draft, "context", "compaction_trigger_tokens")}
+          >
+            <NumberField
+              value={getVal(settings, draft, "context", "compaction_trigger_tokens", 2000)}
+              onChange={(v) => onUpdate("context", "compaction_trigger_tokens", v)}
+              min={500}
+              max={8000}
+              step={100}
             />
           </SettingsField>
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader className="pb-2">
-          <CardTitle className="text-sm">Ollama (Embeddings)</CardTitle>
-        </CardHeader>
-        <CardContent className="divide-y divide-border">
-          <SettingsField label="Base URL" modified={isModified(draft, "ollama", "base_url")}>
-            <TextField
-              value={getVal(settings, draft, "ollama", "base_url", "")}
-              onChange={(v) => onUpdate("ollama", "base_url", v)}
-            />
-          </SettingsField>
-          <SettingsField label="Embed Model" modified={isModified(draft, "ollama", "embed_model")}>
-            <TextField
-              value={getVal(settings, draft, "ollama", "embed_model", "")}
-              onChange={(v) => onUpdate("ollama", "embed_model", v)}
-            />
-          </SettingsField>
-        </CardContent>
-      </Card>
     </div>
   );
 }

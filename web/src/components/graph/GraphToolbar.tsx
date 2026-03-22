@@ -42,14 +42,14 @@ export function GraphToolbar({
 
       {stats && (
         <div className="flex items-center gap-2">
-          <Badge variant="secondary" className="text-[10px] font-mono">
+          <Badge variant="secondary" className="text-[12px] font-mono">
             {stats.node_count} nodes
           </Badge>
-          <Badge variant="secondary" className="text-[10px] font-mono">
+          <Badge variant="secondary" className="text-[12px] font-mono">
             {stats.edge_count} edges
           </Badge>
           {Object.entries(stats.type_distribution).map(([type, count]) => (
-            <Badge key={type} variant="outline" className="text-[10px]">
+            <Badge key={type} variant="outline" className="text-[12px]">
               {type}: {count}
             </Badge>
           ))}

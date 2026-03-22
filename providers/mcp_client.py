@@ -32,6 +32,35 @@ _MCP_TIMEOUT = 20  # seconds
 _ENV_VAR_RE = re.compile(r"\$\{(\w+)\}")
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 
+# ── OpenAI-compatible tool definitions for known MCP servers ──
+
+_MCP_TOOL_DEFS: dict[str, list[dict]] = {
+    "brave-search": [
+        {
+            "type": "function",
+            "function": {
+                "name": "brave_web_search",
+                "description": "Search the web using Brave Search for current information, news, or topics not in the verified context.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Search query",
+                        },
+                        "count": {
+                            "type": "integer",
+                            "description": "Number of results (1-20)",
+                            "default": 5,
+                        },
+                    },
+                    "required": ["query"],
+                },
+            },
+        },
+    ],
+}
+
 
 def _strip_html(text: str) -> str:
     """Remove HTML tags and decode entities."""
@@ -225,6 +254,29 @@ class MCPManager:
                 content="\n".join(texts),
                 is_error=bool(result.isError),
             )
+
+    def get_tool_definitions(self) -> list[dict]:
+        """Return OpenAI-compatible tool definitions for all ready MCP servers."""
+        tools: list[dict] = []
+        for name in self._servers:
+            if self._server_status.get(name) != "ready":
+                continue
+            defs = _MCP_TOOL_DEFS.get(name, [])
+            tools.extend(defs)
+        return tools
+
+    async def call_tool_by_name(
+        self, tool_name: str, arguments: dict,
+    ) -> MCPToolResult:
+        """Find the MCP server that owns this tool and call it."""
+        for server_name, defs in _MCP_TOOL_DEFS.items():
+            for d in defs:
+                if d["function"]["name"] == tool_name:
+                    return await self.call_tool(server_name, tool_name, arguments)
+        return MCPToolResult(
+            content=f"No MCP server found for tool '{tool_name}'",
+            is_error=True,
+        )
 
     async def search_web(self, query: str) -> str:
         """Search the web. Tries MCP first, falls back to direct Brave API.

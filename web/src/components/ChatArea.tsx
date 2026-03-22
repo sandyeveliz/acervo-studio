@@ -1,6 +1,5 @@
-import { MessageList } from "./MessageList";
+import { ChatTimeline } from "./ChatTimeline";
 import { ChatInput } from "./ChatInput";
-import { PipelineSteps } from "./PipelineSteps";
 import type { Message, StepGroup } from "@/lib/types";
 
 interface ChatAreaProps {
@@ -22,12 +21,13 @@ export function ChatArea({
 }: ChatAreaProps) {
   return (
     <div className="flex flex-col flex-1 min-h-0">
-      <MessageList
+      <ChatTimeline
         messages={messages}
+        pipelineSteps={pipelineSteps}
         currentStream={currentStream}
         isStreaming={isStreaming}
+        isProcessing={isProcessing}
       />
-      <PipelineSteps groups={pipelineSteps} currentTurnActive={isProcessing} />
       <ChatInput onSend={onSend} disabled={isProcessing} />
     </div>
   );

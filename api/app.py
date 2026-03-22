@@ -9,25 +9,25 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from api.routes import router
 from api.rest_routes import router as rest_router
-from api.session import SessionManager
+from api.session import SessionRegistry
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup: init session. Shutdown: cleanup."""
-    session = SessionManager()
-    await session.init()
-    app.state.session = session
+    """Startup: init session registry. Shutdown: cleanup."""
+    registry = SessionRegistry()
+    await registry.init()
+    app.state.registry = registry
     yield
-    await session.cleanup()
+    await registry.cleanup()
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="AVS-Agents", lifespan=lifespan)
+    app = FastAPI(title="Acervo Studio", lifespan=lifespan)
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+        allow_origin_regex=r"http://(localhost|127\.0\.0\.1):\d+",
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
