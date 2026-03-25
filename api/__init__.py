@@ -1,1 +1,1 @@
-"""AVS-Agents — FastAPI web server package."""
+"""Acervo Studio — FastAPI web server package."""

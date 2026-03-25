@@ -5,28 +5,77 @@ __pycache__/
 dist/
 build/
 .eggs/
+*.egg
 
-# Environment
+# Virtual environments
 .env
 .venv/
 venv/
+env/
 
-# Runtime data
+# Runtime data (graph, sessions, traces — user-specific)
 data/
 
-# IDE
+# IDE / editors
 .vscode/
 .idea/
 *.swp
 *.swo
+*~
+*.sublime-project
+*.sublime-workspace
 
 # OS
 .DS_Store
 Thumbs.db
+Desktop.ini
 
 # Logs
 *.log
 
-# MCP configuration
-# this is to not upload the MCP configuration file which may contain sensitive information
+# MCP configuration (may contain API keys)
 .mcp.json
+
+# ── AI tools ──────────────────────────────────────
+# Claude Code
+.claude/
+CLAUDE.md
+
+# Cursor
+.cursor/
+.cursorignore
+.cursorindexingignore
+.cursorcontext
+
+# GitHub Copilot
+.copilot/
+
+# Codeium / Windsurf
+.codeium/
+.windsurf/
+
+# Aider
+.aider*
+
+# Continue.dev
+.continue/
+
+# Cody (Sourcegraph)
+.cody/
+
+# Amazon Q / CodeWhisperer
+.aws/amazonq/
+.amazonq/
+
+# Generic AI context files
+.ai/
+.aicontext
+.promptcache
+
+# ── Acervo ────────────────────────────────────────
+# Created and maintained by Acervo — config, prompts, graph, vector DB
+.acervo/
+
+# ── Node / web build ─────────────────────────────
+node_modules/
+web/dist/

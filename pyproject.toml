@@ -1,9 +1,8 @@
 [project]
-name = "avs-agents"
-version = "0.1.0"
+name = "acervo-studio"
+version = "0.2.0"
 requires-python = ">=3.11"
 dependencies = [
-    "textual>=0.70.0",
     "openai>=1.50.0",
     "ollama>=0.3.0",
     "chromadb>=0.5.0",
@@ -28,7 +27,7 @@ dependencies = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["config*", "core*", "providers*", "rag*", "skills*", "protocols*", "tui*", "api*"]
+include = ["config*", "core*", "providers*", "rag*", "skills*", "protocols*", "api*"]
 
 [tool.setuptools]
 py-modules = []

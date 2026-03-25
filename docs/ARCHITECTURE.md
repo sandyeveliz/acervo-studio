@@ -1,4 +1,4 @@
-# AVS-Agents — Arquitectura
+# Acervo Studio — Arquitectura
 
 Documento actualizado con el estado real de la implementación.
 
@@ -81,8 +81,8 @@ Usuario escribe mensaje
 ## Estructura de archivos
 
 ```
-AVS-Agents/
-├── main.py                          # Entry point → TUI
+acervo-studio/
+├── server.py                        # Entry point → FastAPI + Uvicorn
 ├── pyproject.toml
 ├── config/
 │   ├── settings.py                  # Dataclasses: Settings, LMStudioSettings, etc.
@@ -112,12 +112,15 @@ AVS-Agents/
 │   ├── ollama.py                    # Ollama (embeddings únicamente)
 │   └── model_router.py              # ModelRouter: main + utility providers
 │
-├── tui/
-│   ├── app.py                       # Textual App: layout, eventos, streaming
-│   └── widgets/
-│       ├── chat_panel.py            # Chat + timeline unificado
-│       ├── log_stream.py            # StatsPanel + TopicsDisplay
-│       └── trace_panel.py           # (no montado, disponible para debug)
+├── api/
+│   ├── app.py                       # FastAPI app factory
+│   ├── routes.py                    # WebSocket routes
+│   ├── rest_routes.py               # REST API routes
+│   ├── session.py                   # Session registry
+│   └── trace_store.py               # Trace persistence
+│
+├── web/                             # React + TypeScript web UI
+│   └── src/
 │
 ├── utils/
 │   ├── text.py                      # strip_think_blocks, sanitización
@@ -242,7 +245,6 @@ Cada paso emite un evento tipado via EventBus. Los eventos aparecen inline en el
 
 ### Prioridad media
 - [ ] Session summarizer al cerrar sesión
-- [ ] Graph explorer TUI screen
 - [ ] RAG: embedder + vector_store + retriever
 - [ ] Skills framework (@skill decorator)
 
@@ -250,4 +252,3 @@ Cada paso emite un evento tipado via EventBus. Los eventos aparecen inline en el
 - [ ] Protocolos inter-agente: MCP, A2A, ANP
 - [ ] Agent class + Orchestrator + Teams
 - [ ] OpenRouter fallback para latencia alta
-- [ ] Dashboard TUI screen

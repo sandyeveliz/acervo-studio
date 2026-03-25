@@ -95,7 +95,7 @@ export function McpSettings({ settings, draft, onUpdate }: McpSettingsProps) {
 
   return (
     <div className="space-y-4">
-      {/* Web Search — saved to AVS-Agents settings.toml via main Save */}
+      {/* Web Search — saved to settings.toml via main Save */}
       <Card>
         <CardHeader className="pb-2">
           <CardTitle className="text-sm">Web Search</CardTitle>

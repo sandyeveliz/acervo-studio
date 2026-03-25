@@ -1,30 +1,39 @@
-# AVS-Agents
+# Acervo Studio
 
-Aplicación Python con TUI (Textual) para crear y gestionar equipos de agentes de IA que corren en background.
+AI conversation app with episodic memory graph. Uses a single fine-tuned model via LM Studio for both chat and extraction — behavior is determined by the system prompt. Ollama runs embeddings.
 
-Los agentes usan LM Studio (Qwen 3.5 9b) como LLM local, Ollama (Qwen embeddings) para RAG, y se comunican entre sí via A2A y ANP.
+The core differentiator is the **Context Index**: each turn builds a fresh context from a persistent knowledge graph instead of accumulating conversation history.
 
-## Diferencial
+See full design in [`docs/CONTEXT_ENGINE_DESIGN.md`](docs/CONTEXT_ENGINE_DESIGN.md).
 
-El **Context Index** — un runtime de contexto propio que reemplaza el modelo clásico de acumulación de historial por un sistema de topics activos y grafo de memoria episódica. El contexto que recibe el modelo es siempre pequeño, preciso y relevante.
-
-Ver diseño completo en [`docs/CONTEXT_ENGINE_DESIGN.md`](docs/CONTEXT_ENGINE_DESIGN.md).
-
-## Prerequisitos
+## Prerequisites
 
 - **Python 3.11+**
-- **LM Studio** corriendo en `localhost:1234` con un modelo cargado
-- **Ollama** corriendo en `localhost:11434` con modelo de embeddings
+- **Node.js 18+** (for web UI)
+- **LM Studio** running on `localhost:1234` with a model loaded
+- **Ollama** running on `localhost:11434` with an embedding model
 
 ## Setup
 
 ```bash
 pip install -e .
 cp .env.example .env
+# Edit .env with your configuration
+
+cd web
+npm install
+npm run build
 ```
 
-## Uso
+## Usage
 
 ```bash
-python main.py
+# Start the backend
+python server.py
+
+# Start the web UI (development)
+cd web
+npm run dev
 ```
+
+Open `http://localhost:5173` in your browser.

@@ -1,4 +1,4 @@
-"""AVS-Agents — Web server entry point."""
+"""Acervo Studio — Web server entry point."""
 
 import os
 import sys

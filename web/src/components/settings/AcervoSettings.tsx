@@ -29,7 +29,7 @@ export function AcervoSettings({ settings, draft, onUpdate }: AcervoSettingsProp
   const [savingAcervo, setSavingAcervo] = useState(false);
   const [acervoSaved, setAcervoSaved] = useState(false);
 
-  // Plugin settings (AVS-Agents settings.toml)
+  // Plugin settings (settings.toml)
   const pluginDraft = draft["plugins"]?.["acervo"] as Record<string, unknown> | undefined;
   const isEnabled = (pluginDraft?.["enabled"] as boolean) ?? settings.plugins.acervo.enabled;
   const proxyUrl = (pluginDraft?.["proxy_url"] as string) ?? settings.plugins.acervo.proxy_url;
@@ -108,7 +108,7 @@ export function AcervoSettings({ settings, draft, onUpdate }: AcervoSettingsProp
 
   return (
     <div className="space-y-4">
-      {/* Plugin toggle — saved to AVS-Agents settings.toml */}
+      {/* Plugin toggle — saved to settings.toml */}
       <Card>
         <CardHeader className="pb-2">
           <CardTitle className="text-sm">Acervo Plugin</CardTitle>
@@ -170,7 +170,7 @@ export function AcervoSettings({ settings, draft, onUpdate }: AcervoSettingsProp
         </CardContent>
       </Card>
 
-      {/* Routing — saved to AVS-Agents settings.toml */}
+      {/* Routing — saved to settings.toml */}
       <Card>
         <CardHeader className="pb-2">
           <CardTitle className="text-sm">Routing</CardTitle>

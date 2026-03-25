@@ -875,7 +875,7 @@ async def clear_acervo_data(request: Request):
     try:
         # Tell proxy to clear its data (handles ChromaDB locks internally)
         await _clear_acervo_proxy(session)
-        # Reset conversation history in AVS-Agents
+        # Reset conversation history
         await session.reset()
         return {"cleared": True}
     except Exception as e:

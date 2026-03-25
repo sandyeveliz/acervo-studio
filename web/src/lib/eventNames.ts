@@ -1,7 +1,7 @@
 /** Map event types to display labels for the pipeline step UI.
  *
  * source controls the badge color in TraceCard:
- *   "avs" = AVS-Agents backend (emerald)
+ *   "avs" = Acervo Studio backend (emerald)
  *   "acr" = Acervo context engine (amber)
  *   "llm" = LLM provider (purple)
  *   "mcp" = External tools (blue)

@@ -1,4 +1,4 @@
-/** Typed API client for AVS-Agents REST endpoints. */
+/** Typed API client for Acervo Studio REST endpoints. */
 
 const BASE = "http://localhost:8000/api";
 
