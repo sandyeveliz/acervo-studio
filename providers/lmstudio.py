@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from typing import AsyncIterator
@@ -135,7 +136,10 @@ class LMStudioProvider(ModelProvider):
         )
 
     async def close(self) -> None:
-        await self._client.close()
+        try:
+            await asyncio.wait_for(self._client.close(), timeout=2.0)
+        except (asyncio.TimeoutError, Exception):
+            pass  # Don't hang on shutdown
 
     @staticmethod
     def _to_api_msg(msg: ChatMessage) -> dict:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from typing import AsyncIterator
@@ -42,9 +43,9 @@ class TokenUsage:
 class ModelRouter:
     """Routes calls to the right provider.
 
-    Two LLM providers:
-    - lmstudio: main chat model (Qwen 3.5 9B with thinking)
-    - lmstudio_utility: fast model for utility tasks (Qwen 2.5 3B, no thinking)
+    LLM providers:
+    - lmstudio: main chat model (acervo-extractor-qwen3.5-9b)
+    - lmstudio_utility: utility tasks (same model by default, can be overridden)
     - ollama: embeddings only
     """
 
@@ -80,7 +81,7 @@ class ModelRouter:
         force_local: bool = False,
         base_url_override: str | None = None,
     ) -> ChatResponse:
-        """Chat with the main model (Qwen 3.5 9B).
+        """Chat with the main model.
 
         Args:
             base_url_override: If set, route the request through this URL
@@ -117,7 +118,7 @@ class ModelRouter:
         temperature: float = 0.0,
         max_tokens: int = 300,
     ) -> ChatResponse:
-        """Chat with the utility model (Qwen 2.5 3B). For extraction, classification, etc."""
+        """Chat with the utility model. For extraction, classification, etc."""
         response = await self._utility.chat(
             messages,
             temperature=temperature,
@@ -170,8 +171,20 @@ class ModelRouter:
         return resp
 
     async def close(self) -> None:
-        await self._lmstudio.close()
-        await self._utility.close()
-        await self._ollama.close()
+        try:
+            await asyncio.wait_for(self._lmstudio.close(), timeout=2.0)
+        except (asyncio.TimeoutError, Exception):
+            pass
+        try:
+            await asyncio.wait_for(self._utility.close(), timeout=2.0)
+        except (asyncio.TimeoutError, Exception):
+            pass
+        try:
+            await asyncio.wait_for(self._ollama.close(), timeout=2.0)
+        except (asyncio.TimeoutError, Exception):
+            pass
         for provider in getattr(self, "_override_providers", {}).values():
-            await provider.close()
+            try:
+                await asyncio.wait_for(provider.close(), timeout=2.0)
+            except (asyncio.TimeoutError, Exception):
+                pass

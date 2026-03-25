@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Copy, Check, ChevronDown, ChevronRight } from "lucide-react";
 import type { PipelineStep } from "@/lib/types";
 import { getEventLabel, getEventSource } from "@/lib/eventNames";
@@ -7,11 +7,22 @@ import { ContextStackView } from "./ContextStackView";
 import { PipelineStepper } from "./PipelineStepper";
 import { copyEntryAsMarkdown, formatTime } from "./copyTrace";
 
+// ── Shared prop for expand override ──
+
+interface DetailProps {
+  raw: Record<string, unknown>;
+  forceOpen?: boolean;
+}
+
 // ── Specialized detail viewers ──
 
-function StreamDetail({ raw }: { raw: Record<string, unknown> }) {
+function StreamDetail({ raw, forceOpen }: DetailProps) {
   const [open, setOpen] = useState(false);
   const text = raw.clean_text as string | undefined;
+
+  useEffect(() => {
+    if (forceOpen !== undefined) setOpen(forceOpen);
+  }, [forceOpen]);
 
   return (
     <div className="mt-1 ml-4">
@@ -31,11 +42,15 @@ function StreamDetail({ raw }: { raw: Record<string, unknown> }) {
   );
 }
 
-function ExecutorDetail({ raw }: { raw: Record<string, unknown> }) {
+function ExecutorDetail({ raw, forceOpen }: DetailProps) {
   const [open, setOpen] = useState(false);
   const content = (raw.content as string) ?? (raw.result as string) ?? "";
   if (!content) return null;
   const preview = content.length > 300 ? content.slice(0, 300) + "…" : content;
+
+  useEffect(() => {
+    if (forceOpen !== undefined) setOpen(forceOpen);
+  }, [forceOpen]);
 
   return (
     <div className="mt-1 ml-4">
@@ -55,10 +70,14 @@ function ExecutorDetail({ raw }: { raw: Record<string, unknown> }) {
   );
 }
 
-function RequestBodyView({ raw }: { raw: Record<string, unknown> }) {
+function RequestBodyView({ raw, forceOpen }: DetailProps) {
   const [open, setOpen] = useState(false);
   const [showActual, setShowActual] = useState(true);
   const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    if (forceOpen !== undefined) setOpen(forceOpen);
+  }, [forceOpen]);
 
   // Parse both pipeline-side and proxy-side request data
   const pipelineJson = raw.request_messages as string | undefined;
@@ -151,10 +170,14 @@ function RequestBodyView({ raw }: { raw: Record<string, unknown> }) {
   );
 }
 
-function RawDataToggle({ raw }: { raw: Record<string, unknown> }) {
+function RawDataToggle({ raw, forceOpen }: DetailProps) {
   const [open, setOpen] = useState(false);
   const keys = Object.keys(raw).filter((k) => k !== "type" && k !== "timestamp");
   if (keys.length === 0) return null;
+
+  useEffect(() => {
+    if (forceOpen !== undefined) setOpen(forceOpen);
+  }, [forceOpen]);
 
   return (
     <div className="mt-1 ml-4">
@@ -218,7 +241,12 @@ const SPECIAL_TYPES = new Set([
   "acervo_enrich_result",
 ]);
 
-export function TraceCard({ step }: { step: PipelineStep }) {
+interface TraceCardProps {
+  step: PipelineStep;
+  forceOpenDetails?: boolean;
+}
+
+export function TraceCard({ step, forceOpenDetails }: TraceCardProps) {
   const [copied, setCopied] = useState(false);
   const source = getEventSource(step.type);
   const config = getSourceConfig(source);
@@ -234,12 +262,12 @@ export function TraceCard({ step }: { step: PipelineStep }) {
   const hasRaw = !SPECIAL_TYPES.has(step.type) && Object.keys(step.raw).length > 1;
 
   return (
-    <div className={`border-l-2 ${config.borderClass} py-1.5 pl-3 hover:bg-muted/30 transition-colors`}>
+    <div className={`border-l-2 ${config.borderClass} py-1.5 pl-3 hover:bg-muted/30 transition-colors overflow-hidden`}>
       {/* Header row */}
-      <div className="flex items-center gap-2 text-sm font-mono leading-6">
-        <span className="text-[12px] text-muted-foreground/60 shrink-0">{time}</span>
-        <SourceBadge source={source} />
-        <span className="font-medium text-muted-foreground/90 shrink-0">
+      <div className="flex items-start gap-2 text-sm font-mono leading-6 min-w-0">
+        <span className="text-[12px] text-muted-foreground/60 shrink-0 mt-0.5">{time}</span>
+        <span className="shrink-0 mt-0.5"><SourceBadge source={source} /></span>
+        <span className="font-medium text-muted-foreground/90 min-w-0 break-words">
           {step.detail || getEventLabel(step.type)}
         </span>
         <button
@@ -260,10 +288,10 @@ export function TraceCard({ step }: { step: PipelineStep }) {
       {/* Expandable detail by event type */}
       {step.type === "context_built" && <ContextStackView raw={step.raw} />}
       {step.type === "acervo_enrich_result" && <PipelineStepper raw={step.raw} />}
-      {step.type === "stream_started" && <RequestBodyView raw={step.raw} />}
-      {step.type === "stream_completed" && <StreamDetail raw={step.raw} />}
-      {step.type === "executor_result" && <ExecutorDetail raw={step.raw} />}
-      {hasRaw && <RawDataToggle raw={step.raw} />}
+      {step.type === "stream_started" && <RequestBodyView raw={step.raw} forceOpen={forceOpenDetails} />}
+      {step.type === "stream_completed" && <StreamDetail raw={step.raw} forceOpen={forceOpenDetails} />}
+      {step.type === "executor_result" && <ExecutorDetail raw={step.raw} forceOpen={forceOpenDetails} />}
+      {hasRaw && <RawDataToggle raw={step.raw} forceOpen={forceOpenDetails} />}
     </div>
   );
 }

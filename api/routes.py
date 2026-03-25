@@ -15,6 +15,31 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _demote_graph_layers(session) -> None:
+    """Set all graph nodes to 'cold' status on disk for a fresh conversation."""
+    try:
+        from pathlib import Path
+        import json as json_mod
+        acervo_dir = Path(session.settings.plugins.acervo.acervo_dir)
+        if not acervo_dir.is_absolute():
+            acervo_dir = Path.cwd() / acervo_dir
+        nodes_path = acervo_dir / "data" / "graph" / "nodes.json"
+        if not nodes_path.exists():
+            return
+        with open(nodes_path, "r", encoding="utf-8") as f:
+            nodes = json_mod.load(f)
+        changed = False
+        for n in nodes:
+            if n.get("status", "") in ("hot", "warm"):
+                n["status"] = "cold"
+                changed = True
+        if changed:
+            with open(nodes_path, "w", encoding="utf-8") as f:
+                json_mod.dump(nodes, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass  # Non-critical
+
+
 @router.websocket("/ws/chat")
 async def websocket_chat(websocket: WebSocket) -> None:
     await websocket.accept()
@@ -91,6 +116,10 @@ async def websocket_chat(websocket: WebSocket) -> None:
 
             elif msg_type == "reset":
                 await session.reset()
+                # Also reset graph layers and proxy (match REST /session/reset)
+                from api.rest_routes import _reset_acervo_proxy
+                _demote_graph_layers(session)
+                await _reset_acervo_proxy(session)
                 await websocket.send_json({"type": "reset_complete"})
 
             elif msg_type == "get_stats":

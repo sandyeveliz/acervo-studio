@@ -42,6 +42,7 @@ class ContextSettings:
     topic_change_embed_threshold: float = 0.65
     compaction_trigger_tokens: int = 2000
     plan_mode: bool = False
+    history_window: int = 2  # messages to keep when graph has context (0 = no windowing)
 
 
 @dataclass(frozen=True)

@@ -56,9 +56,10 @@ interface TracePanelProps {
   steps: PipelineStep[];
   isActiveTurn: boolean;
   isStreaming: boolean;
+  forceOpenDetails?: boolean;
 }
 
-export function TracePanel({ steps, isActiveTurn, isStreaming }: TracePanelProps) {
+export function TracePanel({ steps, isActiveTurn, isStreaming, forceOpenDetails }: TracePanelProps) {
   const [compact, setCompact] = useState(false);
   const [copied, setCopied] = useState(false);
 
@@ -120,7 +121,7 @@ export function TracePanel({ steps, isActiveTurn, isStreaming }: TracePanelProps
               return (
                 <div key={`${step.type}-${j}`}>
                   {showDivider && <PhaseDivider phase={phase} label={dividerLabel} />}
-                  <TraceCard step={step} />
+                  <TraceCard step={step} forceOpenDetails={forceOpenDetails} />
                 </div>
               );
             })}

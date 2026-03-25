@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { Save, RotateCcw } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { SettingsField, ToggleField } from "./SettingsField";
+import { SettingsField, ToggleField, NumberField } from "./SettingsField";
 import { systemPromptApi, type AppSettings } from "@/lib/api";
 
 interface PromptSettingsProps {
@@ -126,12 +126,24 @@ export function PromptSettings({ settings, draft, onUpdate }: PromptSettingsProp
         </CardContent>
       </Card>
 
-      {/* Plan Mode — uses draft/onUpdate (saved with main Settings save) */}
+      {/* Context behavior — uses draft/onUpdate (saved with main Settings save) */}
       <Card>
         <CardHeader className="pb-2">
-          <CardTitle className="text-sm">Reasoning</CardTitle>
+          <CardTitle className="text-sm">Context &amp; Reasoning</CardTitle>
         </CardHeader>
         <CardContent className="divide-y divide-border">
+          <SettingsField
+            label="History Window"
+            description="Messages to keep when graph has context. Older turns are replaced by ranked graph context. Set 0 to disable windowing."
+            modified={isModified(draft, "context", "history_window")}
+          >
+            <NumberField
+              value={getVal(settings, draft, "context", "history_window", 2)}
+              onChange={(v) => onUpdate("context", "history_window", v)}
+              min={0}
+              max={50}
+            />
+          </SettingsField>
           <SettingsField
             label="Plan Mode"
             description="Append step-by-step reasoning instructions to the system prompt"

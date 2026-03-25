@@ -11,6 +11,7 @@ import yaml
 
 from config.prompt_loader import load_all_prompts
 from config.settings import load_settings, Settings
+from api.trace_store import TraceStore
 from core.event_bus import EventBus
 from core.pipeline import ConversationPipeline
 from core.tools.file_ops import FileTools
@@ -44,6 +45,7 @@ class SessionManager:
         self.mcp: MCPManager | None = None
         self.pipeline: ConversationPipeline | None = None
         self.turn_logger: TurnLogger | None = None
+        self.trace_store: TraceStore | None = None
         self.history: list[ChatMessage] = []
         self.system_prompt: str = system_prompt
         self.temperature: float = 0.7
@@ -102,6 +104,11 @@ class SessionManager:
         self.turn_logger = TurnLogger(self.name, turns_path)
         self.turn_logger.subscribe(self.bus)
 
+        # Trace event store (persists pipeline events for frontend recovery)
+        trace_path = log_dir / "trace.jsonl"
+        self.trace_store = TraceStore(persist_path=trace_path)
+        self.trace_store.subscribe(self.bus)
+
         # Load persisted history or start fresh
         self.history = self._load_history()
         if not self.history:
@@ -139,12 +146,14 @@ class SessionManager:
         return self._running
 
     async def reset(self) -> None:
-        """Clear chat history."""
+        """Clear chat history and trace."""
         self.history = [
             ChatMessage(role="system", content=self.system_prompt),
         ]
         self._turn_count = 0
         self._save_history()
+        if self.trace_store:
+            self.trace_store.clear()
 
     # ── History persistence ──
 

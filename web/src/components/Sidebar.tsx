@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { RefreshCw, FileJson, MessageSquareX, Trash2 } from "lucide-react";
+import { RefreshCw, FileJson, Trash2 } from "lucide-react";
 import { Separator } from "@/components/ui/separator";
 import { McpConfigDialog } from "./McpConfigDialog";
 import { mcpApi, acervoApi, type AcervoProxyStatus, type AcervoGraphInfo, type ContextLayersResponse } from "@/lib/api";
@@ -104,10 +104,11 @@ export function Sidebar({ stats, connected, onReset }: SidebarProps) {
     }
   }, []);
 
-  const handleClearAcervoData = async () => {
-    if (!window.confirm("Clear all Acervo graph data? This cannot be undone.")) return;
+  const handleClearAll = async () => {
+    if (!window.confirm("Clear conversation and Acervo graph data? This cannot be undone.")) return;
     try {
       await acervoApi.clearData();
+      onReset();
       await fetchAcervoData();
     } catch {
       // ignore
@@ -134,22 +135,13 @@ export function Sidebar({ stats, connected, onReset }: SidebarProps) {
         <span className="text-sm text-muted-foreground/80">
           {connected ? "Connected" : "Disconnected"}
         </span>
-        <div className="flex items-center gap-1 ml-auto">
-          <button
-            onClick={onReset}
-            className="p-1 text-muted-foreground/60 hover:text-foreground transition-colors cursor-pointer"
-            title="Clear conversation history"
-          >
-            <MessageSquareX size={14} />
-          </button>
-          <button
-            onClick={handleClearAcervoData}
-            className="p-1 text-muted-foreground/60 hover:text-red-400 transition-colors cursor-pointer"
-            title="Clear Acervo graph data"
-          >
-            <Trash2 size={14} />
-          </button>
-        </div>
+        <button
+          onClick={handleClearAll}
+          className="ml-auto p-1 text-muted-foreground/60 hover:text-red-400 transition-colors cursor-pointer"
+          title="Clear conversation and graph data"
+        >
+          <Trash2 size={14} />
+        </button>
       </div>
 
       <Separator />

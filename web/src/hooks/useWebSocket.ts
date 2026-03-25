@@ -42,11 +42,19 @@ const INITIAL_STATE: ChatState = {
 
 // ── Actions ──
 
+interface TraceEvent {
+  type: string;
+  timestamp: string;
+  turn: number;
+  [key: string]: unknown;
+}
+
 type Action =
   | { type: "connected" }
   | { type: "disconnected" }
   | { type: "user_message"; text: string }
   | { type: "ws_event"; event: WsEvent }
+  | { type: "trace_restore"; events: TraceEvent[] }
   | { type: "reset" };
 
 let _nextId = 0;
@@ -220,6 +228,35 @@ function reducer(state: ChatState, action: Action): ChatState {
       }
     }
 
+    case "trace_restore": {
+      // Rebuild pipeline step groups from persisted trace events.
+      // Events are grouped by turn number, matching the step groups
+      // created during history_sync.
+      const groups = [...state.pipelineSteps];
+      for (const evt of action.events) {
+        const evtType = evt.type;
+        if (SKIP_STEP_EVENTS.has(evtType)) continue;
+
+        const { type: _t, timestamp: _ts, turn: _turn, ...rawFields } = evt;
+        const step: PipelineStep = {
+          type: evtType,
+          label: getEventLabel(evtType),
+          detail: formatStepDetail(evt as unknown as WsEvent),
+          timestamp: evt.timestamp ?? new Date().toISOString(),
+          raw: rawFields as Record<string, unknown>,
+        };
+
+        // Map turn number (1-based) to group index (0-based)
+        const groupIdx = (evt.turn || 1) - 1;
+        if (groupIdx >= 0 && groupIdx < groups.length) {
+          const group = { ...groups[groupIdx] };
+          group.steps = [...group.steps, step];
+          groups[groupIdx] = group;
+        }
+      }
+      return { ...state, pipelineSteps: groups };
+    }
+
     case "reset":
       return { ...INITIAL_STATE, connected: state.connected };
 
@@ -310,6 +347,17 @@ export function useWebSocket() {
       try {
         const event = JSON.parse(e.data) as WsEvent;
         dispatch({ type: "ws_event", event });
+        // After history_sync restores messages, fetch stored trace events
+        if (event.type === "history_sync") {
+          fetch("http://localhost:8000/api/trace")
+            .then((r) => r.json())
+            .then((data) => {
+              if (data.events?.length > 0) {
+                dispatch({ type: "trace_restore", events: data.events });
+              }
+            })
+            .catch(() => {});
+        }
       } catch {
         // ignore parse errors
       }

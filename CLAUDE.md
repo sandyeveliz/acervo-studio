@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-AVS-Agents — Python TUI app (Textual) for AI conversation with episodic memory graph. Uses LM Studio (Qwen 3.5 9B) for chat and a utility model (Qwen 2.5 3B) for extraction, planning, and classification. The core differentiator is the Context Index: each turn builds a fresh context from a persistent knowledge graph instead of accumulating conversation history.
+AVS-Agents — Python TUI app (Textual) for AI conversation with episodic memory graph. Uses a single fine-tuned model (acervo-extractor-qwen3.5-9b) in LM Studio for both chat and extraction — behavior is determined by the system prompt. Ollama runs embeddings (qwen3-embedding). The core differentiator is the Context Index: each turn builds a fresh context from a persistent knowledge graph instead of accumulating conversation history.
 
 ## Commands
 
@@ -31,7 +31,7 @@ message → topic detector → activate nodes → query planner (LLM) → execut
 **Key modules:**
 
 1. **config/** — Frozen dataclasses from `settings.toml` + `.env`. `load_settings()` is the single entry point.
-2. **providers/** — `ModelRouter` with two providers: main (Qwen 3.5 9B for chat) and utility (Qwen 2.5 3B for extraction/planning). Ollama for embeddings only.
+2. **providers/** — `ModelRouter` with LM Studio (single fine-tuned model for chat + extraction). Ollama for embeddings only.
 3. **core/** — Pipeline orchestration:
    - `pipeline.py` — full turn orchestrator, emits typed events
    - `context_index.py` — builds the context stack with sliding window + dynamic budget
@@ -63,7 +63,7 @@ Warm context (graph) always enters fully — priority over hot layer. Budget tar
 - **No `print()`** — events flow through EventBus to TUI widgets.
 - **No hardcoded values** — everything from `config/settings.toml` or `.env`.
 - **Graph nodes are the source of truth** — if it's not in the graph, the model says "No tengo información verificada."
-- **Two models, two roles** — main model (9B) only for user-facing chat. Utility model (3B) for all internal calls (planner, extractor, topic detector L3).
+- **One model, prompt-driven behavior** — acervo-extractor-qwen3.5-9b handles both chat and extraction. The system prompt determines output format (JSON for S1/S1.5, natural language for chat). A separate extractor model can be configured in `.acervo/config.toml` if needed.
 
 ## Config
 

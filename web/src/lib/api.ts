@@ -192,6 +192,7 @@ export interface AppSettings {
     topic_change_embed_threshold: number;
     compaction_trigger_tokens: number;
     plan_mode: boolean;
+    history_window: number;
   };
   graph: {
     persist_path: string;
@@ -354,6 +355,22 @@ export const agentsApi = {
     request<{ deleted: boolean; name: string }>(`/agents/${name}`, {
       method: "DELETE",
     }),
+};
+
+// ── Trace ──
+
+export interface TraceEvent {
+  type: string;
+  timestamp: string;
+  turn: number;
+  [key: string]: unknown;
+}
+
+export const traceApi = {
+  getEvents: () => request<{ events: TraceEvent[] }>("/trace"),
+
+  clear: () =>
+    request<{ cleared: boolean }>("/trace", { method: "DELETE" }),
 };
 
 export const systemPromptApi = {

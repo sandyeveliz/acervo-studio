@@ -535,11 +535,55 @@ async def _reset_acervo_proxy(session) -> None:
         pass  # Non-critical
 
 
+async def _clear_acervo_proxy(session) -> None:
+    """Tell the proxy to clear ALL data (graph + vectordb) and reinitialize.
+
+    Unlike _reset_acervo_proxy (which reloads from disk), this deletes data
+    first. The proxy handles ChromaDB file locks internally.
+    """
+    if not session.settings.plugins.acervo.enabled:
+        return
+    base_url = session.settings.plugins.acervo.proxy_url.rstrip("/").removesuffix("/v1")
+    try:
+        import aiohttp
+        async with aiohttp.ClientSession() as client:
+            resp = await client.post(
+                f"{base_url}/acervo/clear",
+                timeout=aiohttp.ClientTimeout(total=10),
+            )
+            if resp.status != 200:
+                body = await resp.text()
+                logger.warning("Proxy clear failed (%d): %s", resp.status, body)
+    except Exception as e:
+        logger.warning("Could not reach proxy for clear: %s", e)
+
+
 @router.get("/session/stats")
 async def get_session_stats(request: Request):
     """Return full session stats."""
     session = _get_session(request)
     return session.get_stats()
+
+
+# ── Trace endpoints ──
+
+
+@router.get("/trace")
+async def get_trace_events(request: Request):
+    """Return all stored trace events for the current session."""
+    session = _get_session(request)
+    if not session.trace_store:
+        return {"events": []}
+    return {"events": session.trace_store.get_all()}
+
+
+@router.delete("/trace")
+async def clear_trace(request: Request):
+    """Clear all trace events."""
+    session = _get_session(request)
+    if session.trace_store:
+        session.trace_store.clear()
+    return {"cleared": True}
 
 
 # ── Settings endpoints ──
@@ -563,21 +607,26 @@ async def update_settings(request: Request, updates: dict[str, Any]):
             session.pipeline._base_url_override = session.settings.plugins.acervo.proxy_url
         else:
             session.pipeline._base_url_override = None
-    # Sync plan_mode to Acervo config
-    if "context" in updates and "plan_mode" in updates.get("context", {}):
-        _sync_plan_mode_to_acervo(updates["context"]["plan_mode"])
+    # Sync context settings to Acervo config
+    if "context" in updates:
+        ctx = updates["context"]
+        if "plan_mode" in ctx or "history_window" in ctx:
+            _sync_context_to_acervo(ctx)
     return {"saved": True, "settings": settings_to_dict(session.settings)}
 
 
-def _sync_plan_mode_to_acervo(plan_mode: bool) -> None:
-    """Sync plan_mode setting to Acervo's config.toml."""
+def _sync_context_to_acervo(ctx_updates: dict) -> None:
+    """Sync context settings (plan_mode, history_window) to Acervo's config.toml."""
     try:
         acervo_dir = Path(load_settings().plugins.acervo.acervo_dir)
         config_path = acervo_dir / "config.toml"
         if config_path.exists():
             from acervo.config import AcervoConfig
             cfg = AcervoConfig.load(config_path)
-            cfg.context.plan_mode = plan_mode
+            if "plan_mode" in ctx_updates:
+                cfg.context.plan_mode = ctx_updates["plan_mode"]
+            if "history_window" in ctx_updates:
+                cfg.context.history_window = ctx_updates["history_window"]
             cfg.save(config_path)
     except Exception:
         pass  # Non-critical
@@ -709,7 +758,7 @@ async def get_acervo_config(request: Request):
             "initialized": True,
             "model": {"name": cfg.model.name, "url": cfg.model.url, "api_key": cfg.model.api_key},
             "embeddings": {"url": cfg.embeddings.url, "model": cfg.embeddings.model, "api_key": cfg.embeddings.api_key},
-            "proxy": {"port": cfg.proxy.port, "target": cfg.proxy.target},
+            "proxy": {"port": cfg.proxy.port, "target": cfg.proxy.target, "provider_name": cfg.proxy.provider_name},
             "context": {"max_tokens": cfg.context.max_tokens, "injection": cfg.context.injection},
         }
     except Exception as e:
@@ -817,20 +866,20 @@ async def get_acervo_context_layers(request: Request):
 
 @router.delete("/plugins/acervo/data")
 async def clear_acervo_data(request: Request):
-    """Clear all Acervo data (graph, sessions, etc.)."""
-    import shutil
-    acervo_dir = _get_acervo_dir(request)
-    data_dir = acervo_dir / "data"
-    if not data_dir.exists():
-        return {"cleared": True, "path": str(data_dir)}
+    """Clear all Acervo data (graph, vectordb, sessions) and reset proxy state.
+
+    Delegates data deletion to the proxy's /acervo/clear endpoint so that
+    ChromaDB file locks are properly released before removing vectordb files.
+    """
+    session = _get_session(request)
     try:
-        for child in data_dir.iterdir():
-            if child.is_dir():
-                shutil.rmtree(child)
-            else:
-                child.unlink()
-        return {"cleared": True, "path": str(data_dir)}
+        # Tell proxy to clear its data (handles ChromaDB locks internally)
+        await _clear_acervo_proxy(session)
+        # Reset conversation history in AVS-Agents
+        await session.reset()
+        return {"cleared": True}
     except Exception as e:
+        logger.exception("Failed to clear Acervo data")
         raise HTTPException(status_code=500, detail=str(e))
 
 
