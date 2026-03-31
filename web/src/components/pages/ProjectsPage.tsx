@@ -3,6 +3,7 @@ import {
   FolderOpen,
   Plus,
   Trash2,
+  Save,
   CheckCircle2,
   AlertCircle,
   Loader2,
@@ -358,7 +359,7 @@ function ProjectDetail({
   onCheckStatus: () => void;
   onDescriptionSaved: (desc: string) => void;
 }) {
-  const [tab, setTab] = useState<"overview" | "files">("overview");
+  const [tab, setTab] = useState<"overview" | "files" | "config">("overview");
   const [ops, setOps] = useState<{
     indexed_at: string | null;
     curated_at: string | null;
@@ -442,6 +443,19 @@ function ProjectDetail({
                 {summary.new + summary.modified}
               </span>
             )}
+          </button>
+        )}
+        {showFilesTab && (
+          <button
+            onClick={() => setTab("config")}
+            className={cn(
+              "px-3 py-2 text-xs font-medium border-b-2 -mb-px transition-colors cursor-pointer",
+              tab === "config"
+                ? "border-primary text-foreground"
+                : "border-transparent text-muted-foreground hover:text-foreground",
+            )}
+          >
+            Config
           </button>
         )}
       </div>
@@ -672,6 +686,10 @@ function ProjectDetail({
               </div>
             ) : null}
           </div>
+        )}
+
+        {tab === "config" && showFilesTab && (
+          <ProjectConfigTab projectId={project.id} />
         )}
       </div>
     </div>
@@ -1063,6 +1081,157 @@ function CurationProgress({ state }: { state: ReturnType<typeof useCuration>["st
           Found {state.relationsFound} relations, {state.entitiesCreated} entities so far
         </div>
       )}
+    </div>
+  );
+}
+
+
+// ── Project Config Tab ──
+
+function ConfigField({
+  label,
+  value,
+  onChange,
+  type = "text",
+  placeholder,
+  mono,
+}: {
+  label: string;
+  value: string | number;
+  onChange: (v: string) => void;
+  type?: string;
+  placeholder?: string;
+  mono?: boolean;
+}) {
+  return (
+    <div className="flex items-center gap-3">
+      <label className="text-xs text-muted-foreground w-28 shrink-0">{label}</label>
+      <input
+        type={type}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        className={cn(
+          "flex-1 px-2 py-1 text-xs rounded border border-border bg-background text-foreground placeholder:text-muted-foreground/50",
+          mono && "font-mono",
+        )}
+      />
+    </div>
+  );
+}
+
+function ProjectConfigTab({ projectId }: { projectId: string }) {
+  const [config, setConfig] = useState<import("@/lib/api").ProjectConfig | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    setLoading(true);
+    projectsApi.getConfig(projectId).then(setConfig).catch(() => {}).finally(() => setLoading(false));
+  }, [projectId]);
+
+  const handleSave = async () => {
+    if (!config) return;
+    setSaving(true);
+    setError("");
+    try {
+      await projectsApi.updateConfig(projectId, config);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Failed to save");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="p-6 flex items-center gap-2 text-muted-foreground">
+        <Loader2 size={14} className="animate-spin" />
+        <span className="text-xs">Loading config...</span>
+      </div>
+    );
+  }
+
+  if (!config) {
+    return <div className="p-6 text-xs text-muted-foreground">Could not load config</div>;
+  }
+
+  const update = (section: string, key: string, value: string | number) => {
+    setConfig((prev) => {
+      if (!prev) return prev;
+      const s = prev[section as keyof typeof prev];
+      if (typeof s === "object" && s !== null) {
+        return { ...prev, [section]: { ...s, [key]: value } };
+      }
+      return { ...prev, [section]: value };
+    });
+  };
+
+  return (
+    <div className="p-6 space-y-6 max-w-2xl">
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-medium">Project Configuration</h3>
+        <button
+          onClick={handleSave}
+          disabled={saving}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-primary text-primary-foreground hover:bg-primary/90 text-xs font-medium transition-colors cursor-pointer disabled:opacity-50"
+        >
+          {saved ? <CheckCircle2 size={12} /> : saving ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
+          {saved ? "Saved" : "Save"}
+        </button>
+      </div>
+
+      {error && <p className="text-xs text-destructive">{error}</p>}
+
+      {/* Model */}
+      <div className="space-y-2">
+        <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Model</h4>
+        <ConfigField label="Name" value={config.model.name} onChange={(v) => update("model", "name", v)} mono />
+        <ConfigField label="URL" value={config.model.url} onChange={(v) => update("model", "url", v)} mono placeholder="http://localhost:1234/v1" />
+        <ConfigField label="API Key" value={config.model.api_key} onChange={(v) => update("model", "api_key", v)} type="password" />
+      </div>
+
+      {/* Embeddings */}
+      <div className="space-y-2">
+        <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Embeddings</h4>
+        <ConfigField label="URL" value={config.embeddings.url} onChange={(v) => update("embeddings", "url", v)} mono placeholder="http://localhost:11434" />
+        <ConfigField label="Model" value={config.embeddings.model} onChange={(v) => update("embeddings", "model", v)} mono />
+      </div>
+
+      {/* Context */}
+      <div className="space-y-2">
+        <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Context</h4>
+        <ConfigField label="Max Tokens" value={config.context.max_tokens} onChange={(v) => update("context", "max_tokens", parseInt(v) || 0)} type="number" />
+        <ConfigField label="History Window" value={config.context.history_window} onChange={(v) => update("context", "history_window", parseInt(v) || 0)} type="number" />
+      </div>
+
+      {/* Indexing */}
+      <div className="space-y-2">
+        <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Indexing</h4>
+        <div className="flex items-start gap-3">
+          <label className="text-xs text-muted-foreground w-28 shrink-0 pt-1">Extensions</label>
+          <input
+            value={config.indexing.extensions.join(", ")}
+            onChange={(e) => {
+              const exts = e.target.value.split(",").map((s) => s.trim()).filter(Boolean);
+              setConfig((prev) => prev ? { ...prev, indexing: { ...prev.indexing, extensions: exts } } : prev);
+            }}
+            className="flex-1 px-2 py-1 text-xs rounded border border-border bg-background text-foreground font-mono"
+            placeholder=".py, .ts, .md, .epub"
+          />
+        </div>
+      </div>
+
+      {/* Proxy */}
+      <div className="space-y-2">
+        <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Proxy</h4>
+        <ConfigField label="Port" value={config.proxy.port} onChange={(v) => update("proxy", "port", parseInt(v) || 9470)} type="number" />
+        <ConfigField label="Target" value={config.proxy.target} onChange={(v) => update("proxy", "target", v)} mono placeholder="(optional)" />
+      </div>
     </div>
   );
 }

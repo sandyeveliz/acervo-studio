@@ -946,6 +946,165 @@ async def get_project_operations(project_id: str):
     }
 
 
+@router.get("/projects/{project_id}/config")
+async def get_project_config(project_id: str):
+    """Read .acervo/config.toml as structured JSON."""
+    repo = get_repo()
+    entry = repo.get_project(project_id)
+    if not entry:
+        raise HTTPException(404, f"Project not found: {project_id}")
+
+    config_path = Path(entry.path) / ".acervo" / "config.toml"
+    if not config_path.exists():
+        raise HTTPException(400, "Project not initialized")
+
+    from acervo.config import AcervoConfig
+    config = AcervoConfig.load(config_path)
+
+    return {
+        "description": config.description,
+        "model": {"name": config.model.name, "url": config.model.url, "api_key": config.model.api_key},
+        "models": {
+            "extractor": {"name": config.models.extractor.name, "url": config.models.extractor.url},
+            "summarizer": {"name": config.models.summarizer.name, "url": config.models.summarizer.url},
+        },
+        "embeddings": {"url": config.embeddings.url, "model": config.embeddings.model, "api_key": config.embeddings.api_key},
+        "indexing": {"extensions": config.indexing.extensions, "ignore": config.indexing.ignore, "content_type": config.indexing.content_type},
+        "context": {"max_tokens": config.context.max_tokens, "history_window": config.context.history_window},
+        "proxy": {"port": config.proxy.port, "target": config.proxy.target},
+    }
+
+
+@router.put("/projects/{project_id}/config")
+async def update_project_config(project_id: str, body: dict):
+    """Write structured JSON back to .acervo/config.toml."""
+    repo = get_repo()
+    entry = repo.get_project(project_id)
+    if not entry:
+        raise HTTPException(404, f"Project not found: {project_id}")
+
+    config_path = Path(entry.path) / ".acervo" / "config.toml"
+    if not config_path.exists():
+        raise HTTPException(400, "Project not initialized")
+
+    # Read existing config, apply changes, write back
+    from acervo.config import AcervoConfig
+
+    try:
+        if sys.version_info >= (3, 11):
+            import tomllib
+            with open(config_path, "rb") as f:
+                raw = tomllib.load(f)
+        else:
+            import tomli
+            with open(config_path, "rb") as f:
+                raw = tomli.load(f)
+    except Exception:
+        raw = {}
+
+    acervo = raw.setdefault("acervo", {})
+
+    # Apply fields from body
+    if "description" in body:
+        acervo["description"] = body["description"]
+    if "model" in body:
+        m = acervo.setdefault("model", {})
+        for k in ("name", "url", "api_key"):
+            if k in body["model"]:
+                m[k] = body["model"][k]
+    if "embeddings" in body:
+        e = acervo.setdefault("embeddings", {})
+        for k in ("url", "model", "api_key"):
+            if k in body["embeddings"]:
+                e[k] = body["embeddings"][k]
+    if "indexing" in body:
+        idx = acervo.setdefault("indexing", {})
+        for k in ("extensions", "ignore", "content_type"):
+            if k in body["indexing"]:
+                idx[k] = body["indexing"][k]
+    if "context" in body:
+        ctx = acervo.setdefault("context", {})
+        for k in ("max_tokens", "history_window"):
+            if k in body["context"]:
+                ctx[k] = body["context"][k]
+    if "proxy" in body:
+        px = acervo.setdefault("proxy", {})
+        for k in ("port", "target"):
+            if k in body["proxy"]:
+                px[k] = body["proxy"][k]
+
+    # Write back as TOML
+    try:
+        import tomli_w
+        with open(config_path, "wb") as f:
+            tomli_w.dump(raw, f)
+    except ImportError:
+        # Fallback: write manually (basic TOML serialization)
+        _write_toml_simple(raw, config_path)
+
+    return {"saved": True}
+
+
+def _write_toml_simple(data: dict, path: Path) -> None:
+    """Basic TOML writer for nested dicts. Handles the acervo config structure."""
+    lines: list[str] = []
+    acervo = data.get("acervo", {})
+
+    lines.append("# Acervo configuration\n")
+
+    # Top-level scalars
+    lines.append("[acervo]")
+    for k in ("workspace", "data_dir", "owner", "description"):
+        if k in acervo:
+            lines.append(f'{k} = "{acervo[k]}"')
+    lines.append("")
+
+    # Nested sections
+    for section in ("model", "embeddings", "proxy", "indexing", "context"):
+        if section in acervo and isinstance(acervo[section], dict):
+            lines.append(f"[acervo.{section}]")
+            for k, v in acervo[section].items():
+                if isinstance(v, str):
+                    lines.append(f'{k} = "{v}"')
+                elif isinstance(v, bool):
+                    lines.append(f"{k} = {'true' if v else 'false'}")
+                elif isinstance(v, (int, float)):
+                    lines.append(f"{k} = {v}")
+                elif isinstance(v, list):
+                    items = ", ".join(f'"{i}"' for i in v)
+                    lines.append(f"{k} = [{items}]")
+            lines.append("")
+
+    # Models subsections
+    if "models" in acervo:
+        lines.append("[acervo.models]")
+        for role in ("extractor", "summarizer"):
+            if role in acervo["models"]:
+                lines.append(f"[acervo.models.{role}]")
+                for k, v in acervo["models"][role].items():
+                    if isinstance(v, str):
+                        lines.append(f'{k} = "{v}"')
+                lines.append("")
+
+    # Changelog
+    if "changelog" in acervo:
+        lines.append("[acervo.changelog]")
+        for k, v in acervo["changelog"].items():
+            if isinstance(v, list):
+                items = ", ".join(f'"{i}"' for i in v)
+                lines.append(f"{k} = [{items}]")
+        lines.append("")
+
+    # Prompts
+    if "prompts" in acervo:
+        lines.append("[acervo.prompts]")
+        for k, v in acervo["prompts"].items():
+            lines.append(f'{k} = "{v}"')
+        lines.append("")
+
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
 _reindex_locks: dict[str, bool] = {}
 
 

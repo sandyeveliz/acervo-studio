@@ -382,6 +382,19 @@ export interface FileStatusResponse {
   summary: FileStatusSummary;
 }
 
+export interface ProjectConfig {
+  description: string;
+  model: { name: string; url: string; api_key: string };
+  models: {
+    extractor: { name: string; url: string };
+    summarizer: { name: string; url: string };
+  };
+  embeddings: { url: string; model: string; api_key: string };
+  indexing: { extensions: string[]; ignore: string[]; content_type: string };
+  context: { max_tokens: number; history_window: number };
+  proxy: { port: number; target: string };
+}
+
 export const projectsApi = {
   list: () => request<ProjectsResponse>("/projects"),
 
@@ -452,6 +465,15 @@ export const projectsApi = {
       node_count: number;
       edge_count: number;
     }>(`/projects/${projectId}/operations`),
+
+  getConfig: (projectId: string) =>
+    request<ProjectConfig>(`/projects/${projectId}/config`),
+
+  updateConfig: (projectId: string, config: Partial<ProjectConfig>) =>
+    request<{ saved: boolean }>(`/projects/${projectId}/config`, {
+      method: "PUT",
+      body: JSON.stringify(config),
+    }),
 
   updateDescription: (id: string, description: string) =>
     request<{ saved: boolean; description: string }>(
