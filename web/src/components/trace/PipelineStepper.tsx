@@ -8,15 +8,29 @@ interface PipelineStepperProps {
 // ── Stage debug data types (3-stage pipeline) ──
 
 interface S1Data {
-  verdict: string;
-  level: number;
-  confidence: number;
+  // New S1 Unified fields
+  topic_action?: string;
+  topic_label?: string;
   current_topic: string;
-  detected_topic: string | null;
-  keyword: string | null;
-  similarity: number | null;
-  detail: string;
-  placeholder_created: boolean | null;
+  topic_hint?: string;
+  hint_level?: number;
+  hint_verdict?: string;
+  hint_keyword?: string | null;
+  hint_similarity?: number | null;
+  intent?: string;
+  entities_extracted?: number;
+  relations_extracted?: number;
+  facts_extracted?: number;
+  entities?: { name: string; type: string; layer: string }[];
+  // Legacy fields (kept for backward compat with old traces)
+  verdict?: string;
+  level?: number;
+  confidence?: number;
+  detected_topic?: string | null;
+  keyword?: string | null;
+  similarity?: number | null;
+  detail?: string;
+  placeholder_created?: boolean | null;
 }
 
 interface S2Node {
@@ -41,6 +55,7 @@ interface S2Data {
   chunks_total: number;
   chunks_selected: number;
   chunks: S2Chunk[];
+  all_chunks?: S2Chunk[];
 }
 
 interface S3Data {
@@ -82,7 +97,34 @@ function parseStageDebug(raw: Record<string, unknown>): StageDebug {
 
 function s1Narrative(data: S1Data): { summary: string; context: string } {
   const topic = data.current_topic || "unknown";
-  const conf = data.confidence.toFixed(2);
+
+  // New S1 Unified format
+  if (data.topic_action) {
+    const action = data.topic_action;
+    const intent = data.intent || "specific";
+    const isNew = action === "changed";
+
+    let summary: string;
+    if (isNew) {
+      summary = `Found topic: "${topic}" (${action}, intent: ${intent})`;
+    } else {
+      summary = `Topic: "${topic}" (${action}, intent: ${intent})`;
+    }
+
+    const parts: string[] = [];
+    if (data.hint_level) parts.push(`hint: L${data.hint_level}`);
+    if (data.hint_keyword) parts.push(`keyword: "${data.hint_keyword}"`);
+    const ent = data.entities_extracted ?? 0;
+    const rel = data.relations_extracted ?? 0;
+    const facts = data.facts_extracted ?? 0;
+    if (ent > 0 || rel > 0 || facts > 0) {
+      parts.push(`extracted: ${ent}E ${rel}R ${facts}F`);
+    }
+    return { summary, context: parts.join(" | ") };
+  }
+
+  // Legacy format fallback
+  const conf = (data.confidence ?? 0).toFixed(2);
   const isNew = data.verdict === "CHANGED";
   const isContinuation = data.verdict === "CONTINUATION" || data.verdict === "SAME";
 
@@ -92,7 +134,7 @@ function s1Narrative(data: S1Data): { summary: string; context: string } {
   } else if (isContinuation) {
     summary = `Continuing topic: "${topic}" (confidence: ${conf})`;
   } else {
-    summary = `Topic: "${topic}" (${data.verdict.toLowerCase()}, conf: ${conf})`;
+    summary = `Topic: "${topic}" (${(data.verdict ?? "").toLowerCase()}, conf: ${conf})`;
   }
 
   let context = "";
@@ -169,15 +211,71 @@ function s3Narrative(data: S3Data): { summary: string; context: string } {
 function S1RawDetail({ data }: { data: S1Data }) {
   return (
     <div className="space-y-1 text-[12px] font-mono text-muted-foreground/60">
-      <Row label="verdict" value={data.verdict} />
-      <Row label="level" value={`L${data.level}`} />
-      <Row label="confidence" value={data.confidence.toFixed(2)} />
+      {/* New S1 Unified fields */}
+      {data.topic_action && <Row label="action" value={data.topic_action} />}
+      {data.topic_label && <Row label="topic label" value={data.topic_label} />}
       <Row label="current topic" value={data.current_topic} />
-      {data.detected_topic && <Row label="detected" value={data.detected_topic} />}
-      {data.keyword && <Row label="keyword" value={data.keyword} />}
-      {data.similarity != null && <Row label="similarity" value={data.similarity.toFixed(3)} />}
+      {data.intent && <Row label="intent" value={data.intent} highlight />}
+      {data.hint_level != null && <Row label="hint level" value={`L${data.hint_level}`} />}
+      {data.hint_verdict && <Row label="hint verdict" value={data.hint_verdict} />}
+      {data.hint_keyword && <Row label="hint keyword" value={data.hint_keyword} />}
+      {data.hint_similarity != null && <Row label="hint similarity" value={data.hint_similarity.toFixed(3)} />}
+      {data.topic_hint && <Row label="topic hint" value={data.topic_hint} />}
+      {data.entities_extracted != null && (
+        <Row label="extracted" value={`${data.entities_extracted}E ${data.relations_extracted ?? 0}R ${data.facts_extracted ?? 0}F`} />
+      )}
+      {data.entities && data.entities.length > 0 && (
+        <div>
+          <span className="text-muted-foreground/50">entities:</span>
+          <div className="ml-2 mt-0.5 space-y-0.5">
+            {data.entities.map((e, i) => (
+              <div key={i} className="flex gap-2">
+                <span className="text-amber-400/60">{e.type}</span>
+                <span className="text-muted-foreground/70">{e.name}</span>
+                <span className="text-muted-foreground/40">{e.layer}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {/* Legacy fields */}
+      {data.verdict && <Row label="verdict" value={data.verdict} />}
+      {data.confidence != null && <Row label="confidence" value={data.confidence.toFixed(2)} />}
       {data.detail && <Row label="detail" value={data.detail} />}
-      {data.placeholder_created && <Row label="placeholder" value="created" highlight />}
+    </div>
+  );
+}
+
+function AllChunksSection({ chunks }: { chunks: S2Chunk[] }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="mt-1.5">
+      <button
+        onClick={() => setOpen(!open)}
+        className="flex items-center gap-1 text-[12px] text-amber-400/50 hover:text-amber-400/70 font-mono cursor-pointer"
+      >
+        {open ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
+        all available chunks ({chunks.length})
+      </button>
+      {open && (
+        <div className="ml-2 mt-0.5 space-y-1.5">
+          {chunks.map((c, i) => (
+            <div key={i}>
+              <div className="flex gap-2">
+                <span className="text-amber-400/50">{c.score.toFixed(2)}</span>
+                <span className="text-muted-foreground/40">{c.source}</span>
+                <span className="text-muted-foreground/50 truncate">{c.label}</span>
+                <span className="text-muted-foreground/40">{c.tokens}tk</span>
+              </div>
+              {c.text && (
+                <pre className="ml-2 mt-0.5 text-muted-foreground/45 whitespace-pre-wrap break-words max-h-16 overflow-y-auto leading-4 text-[11px]">
+                  {c.text}
+                </pre>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -206,13 +304,20 @@ function S2RawDetail({ data }: { data: S2Data }) {
           <span className="text-muted-foreground/50">
             ranked chunks ({data.chunks_selected}/{data.chunks_total} selected):
           </span>
-          <div className="ml-2 mt-0.5 space-y-0.5">
+          <div className="ml-2 mt-0.5 space-y-1.5">
             {data.chunks.map((c, i) => (
-              <div key={i} className="flex gap-2">
-                <span className="text-amber-400/50">{c.score.toFixed(2)}</span>
-                <span className="text-muted-foreground/40">{c.source}</span>
-                <span className="text-muted-foreground/50 truncate">{c.label}</span>
-                <span className="text-muted-foreground/40">{c.tokens}tk</span>
+              <div key={i}>
+                <div className="flex gap-2">
+                  <span className="text-amber-400/50">{c.score.toFixed(2)}</span>
+                  <span className="text-muted-foreground/40">{c.source}</span>
+                  <span className="text-muted-foreground/50 truncate">{c.label}</span>
+                  <span className="text-muted-foreground/40">{c.tokens}tk</span>
+                </div>
+                {c.text && (
+                  <pre className="ml-2 mt-0.5 text-muted-foreground/45 whitespace-pre-wrap break-words max-h-16 overflow-y-auto leading-4 text-[11px]">
+                    {c.text}
+                  </pre>
+                )}
               </div>
             ))}
           </div>
@@ -240,6 +345,9 @@ function S2RawDetail({ data }: { data: S2Data }) {
             ))}
           </div>
         </div>
+      )}
+      {data.all_chunks && data.all_chunks.length > 0 && (
+        <AllChunksSection chunks={data.all_chunks} />
       )}
     </div>
   );

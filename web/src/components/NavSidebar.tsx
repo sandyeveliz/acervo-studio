@@ -1,13 +1,15 @@
-import { MessageSquare, Network, Bot, Settings, BarChart3, Sun, Moon } from "lucide-react";
+import { MessageSquare, Network, Bot, Settings, BarChart3, FolderOpen, Sun, Moon } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { ProjectSelector } from "./ProjectSelector";
 
-export type Page = "chat" | "graph" | "metrics" | "agents" | "settings";
+export type Page = "chat" | "graph" | "metrics" | "agents" | "projects" | "settings";
 
 const NAV_ITEMS: { page: Page; icon: typeof MessageSquare; label: string }[] = [
   { page: "chat", icon: MessageSquare, label: "Chat" },
   { page: "graph", icon: Network, label: "Graph" },
   { page: "metrics", icon: BarChart3, label: "Metrics" },
   { page: "agents", icon: Bot, label: "Agents" },
+  { page: "projects", icon: FolderOpen, label: "Projects" },
   { page: "settings", icon: Settings, label: "Settings" },
 ];
 
@@ -25,6 +27,8 @@ export function NavSidebar({ currentPage, onNavigate, connected, theme, onToggle
       <div className="text-xs font-semibold text-sidebar-foreground/40 uppercase tracking-wider px-2 mb-2">
         Acervo Studio
       </div>
+
+      <ProjectSelector />
 
       {NAV_ITEMS.map(({ page, icon: Icon, label }) => (
         <button

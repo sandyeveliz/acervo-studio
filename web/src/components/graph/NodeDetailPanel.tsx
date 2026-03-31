@@ -4,8 +4,16 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Trash2, X, Merge, ArrowRight, Copy, Check } from "lucide-react";
+import { Trash2, X, Merge, ArrowRight, Copy, Check, Plus } from "lucide-react";
 import type { GraphNode, GraphEdge } from "@/lib/api";
+
+const RELATION_TYPES = [
+  "related_to", "part_of", "contains", "created_by", "member_of",
+  "located_in", "depends_on", "uses_technology", "alternative_to",
+  "deployed_on", "produces", "serves", "documented_in",
+  "participated_in", "triggered_by", "resulted_in",
+  "sequel_of", "prequel_of", "shares_characters_with",
+];
 
 interface NodeDetailPanelProps {
   node: GraphNode | null;
@@ -16,15 +24,21 @@ interface NodeDetailPanelProps {
   onDeleteFact: (nodeId: string, fact: string) => void;
   onMerge: (keepId: string, absorbId: string, alias: string | null) => void;
   onSelectNode: (nodeId: string) => void;
+  onCreateEdge?: (source: string, target: string, relation: string) => void;
+  onDeleteEdge?: (source: string, target: string, relation: string) => void;
 }
 
-export function NodeDetailPanel({ node, allNodes, edges, onClose, onDeleteNode, onDeleteFact, onMerge, onSelectNode }: NodeDetailPanelProps) {
+export function NodeDetailPanel({ node, allNodes, edges, onClose, onDeleteNode, onDeleteFact, onMerge, onSelectNode, onCreateEdge, onDeleteEdge }: NodeDetailPanelProps) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [mergeMode, setMergeMode] = useState(false);
   const [mergeTarget, setMergeTarget] = useState<string>("");
   const [mergeSearch, setMergeSearch] = useState("");
   const [mergeAlias, setMergeAlias] = useState("");
   const [copied, setCopied] = useState(false);
+  const [addEdgeMode, setAddEdgeMode] = useState(false);
+  const [edgeSearch, setEdgeSearch] = useState("");
+  const [edgeTargetId, setEdgeTargetId] = useState("");
+  const [edgeRelation, setEdgeRelation] = useState("related_to");
 
   if (!node) {
     return (
@@ -53,7 +67,6 @@ export function NodeDetailPanel({ node, allNodes, edges, onClose, onDeleteNode, 
             <div className="flex gap-1.5 mt-1">
               <Badge variant="outline" className="text-[12px]">{node.type}</Badge>
               {node.layer && <Badge variant="secondary" className="text-[12px]">{node.layer}</Badge>}
-              {node.status && <Badge variant="secondary" className="text-[12px]">{node.status}</Badge>}
             </div>
           </div>
           <Button variant="ghost" size="sm" onClick={onClose} className="h-7 w-7 p-0">
@@ -141,7 +154,7 @@ export function NodeDetailPanel({ node, allNodes, edges, onClose, onDeleteNode, 
                   const otherId = isSource ? e.target : e.source;
                   const otherNode = allNodes.find((n) => n.id === otherId);
                   return (
-                    <div key={i} className="flex items-center gap-1.5 text-xs">
+                    <div key={i} className="flex items-center gap-1.5 text-xs group">
                       {isSource ? (
                         <>
                           <span className="text-muted-foreground">{e.relation}</span>
@@ -170,6 +183,15 @@ export function NodeDetailPanel({ node, allNodes, edges, onClose, onDeleteNode, 
                           {e.layer}
                         </Badge>
                       )}
+                      {onDeleteEdge && (
+                        <button
+                          onClick={() => onDeleteEdge(e.source, e.target, e.relation)}
+                          className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-opacity cursor-pointer shrink-0"
+                          title="Remove edge"
+                        >
+                          <Trash2 size={10} />
+                        </button>
+                      )}
                     </div>
                   );
                 })}
@@ -182,6 +204,116 @@ export function NodeDetailPanel({ node, allNodes, edges, onClose, onDeleteNode, 
             </Card>
           );
         })()}
+
+        {/* Add Relation */}
+        {onCreateEdge && (
+          <Card>
+            <CardHeader className="pb-2 pt-3 px-3">
+              <CardTitle className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
+                <Plus size={12} />
+                Add relation
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="px-3 pb-3">
+              {!addEdgeMode ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="w-full text-xs"
+                  onClick={() => setAddEdgeMode(true)}
+                >
+                  <Plus size={12} className="mr-1.5" />
+                  Add relation to this node...
+                </Button>
+              ) : (
+                <div className="space-y-3">
+                  {/* Target search */}
+                  <input
+                    type="text"
+                    placeholder="Search target node..."
+                    value={edgeSearch}
+                    onChange={(e) => setEdgeSearch(e.target.value)}
+                    className="w-full rounded-md border border-input bg-secondary/50 px-2.5 py-1.5 text-xs placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    autoFocus
+                  />
+
+                  {/* Target list */}
+                  <div className="max-h-32 overflow-y-auto border border-border rounded-md">
+                    {allNodes
+                      .filter(
+                        (n) =>
+                          n.id !== node.id &&
+                          (n.label.toLowerCase().includes(edgeSearch.toLowerCase()) ||
+                            n.id.toLowerCase().includes(edgeSearch.toLowerCase())),
+                      )
+                      .slice(0, 20)
+                      .map((n) => (
+                        <button
+                          key={n.id}
+                          onClick={() => setEdgeTargetId(n.id)}
+                          className={`w-full text-left px-2.5 py-1.5 text-xs hover:bg-accent/50 cursor-pointer flex items-center justify-between ${
+                            edgeTargetId === n.id ? "bg-accent text-accent-foreground" : ""
+                          }`}
+                        >
+                          <span className="truncate">{n.label}</span>
+                          <Badge variant="outline" className="text-[9px] ml-1.5 shrink-0">
+                            {n.type}
+                          </Badge>
+                        </button>
+                      ))}
+                  </div>
+
+                  {/* Relation type */}
+                  {edgeTargetId && (
+                    <select
+                      value={edgeRelation}
+                      onChange={(e) => setEdgeRelation(e.target.value)}
+                      className="w-full rounded-md border border-input bg-secondary/50 px-2.5 py-1.5 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    >
+                      {RELATION_TYPES.map((r) => (
+                        <option key={r} value={r}>
+                          {r}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+
+                  {/* Actions */}
+                  <div className="flex gap-2">
+                    <Button
+                      size="sm"
+                      className="flex-1 text-xs"
+                      disabled={!edgeTargetId}
+                      onClick={() => {
+                        onCreateEdge(node.id, edgeTargetId, edgeRelation);
+                        setAddEdgeMode(false);
+                        setEdgeTargetId("");
+                        setEdgeSearch("");
+                        setEdgeRelation("related_to");
+                      }}
+                    >
+                      <Plus size={12} className="mr-1" />
+                      Add
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="text-xs"
+                      onClick={() => {
+                        setAddEdgeMode(false);
+                        setEdgeTargetId("");
+                        setEdgeSearch("");
+                        setEdgeRelation("related_to");
+                      }}
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
 
         {/* Copy JSON */}
         <Button

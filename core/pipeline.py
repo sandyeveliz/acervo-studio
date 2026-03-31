@@ -23,7 +23,6 @@ from core.events import (
     ToolCallCompleted,
     ToolCallRequested,
 )
-from core.tools.file_ops import FileTools
 from utils.token_counter import count_tokens
 from utils.text import strip_think_blocks
 from providers.base import ChatMessage
@@ -43,20 +42,16 @@ class ConversationPipeline:
         router: ModelRouter,
         model_name: str = "",
         mcp=None,
-        file_tools: FileTools | None = None,
         base_url_override: str | None = None,
     ) -> None:
         self._bus = bus
         self._router = router
         self._model_name = model_name
         self._mcp = mcp
-        self._file_tools = file_tools
         self._base_url_override = base_url_override
 
-        # Build unified tool definitions (file tools + MCP tools)
+        # Build unified tool definitions (MCP tools only)
         all_tools: list[dict] = []
-        if file_tools:
-            all_tools.extend(file_tools.tool_definitions)
         if mcp:
             all_tools.extend(mcp.get_tool_definitions())
         self._tool_defs = all_tools if all_tools else None
@@ -182,10 +177,8 @@ class ConversationPipeline:
                     arguments=json.dumps(fn_args, ensure_ascii=False),
                 ))
 
-                # Route to the right executor
-                if self._file_tools and fn_name in self._file_tools.available_tools:
-                    result = self._file_tools.execute(fn_name, fn_args)
-                elif self._mcp:
+                # Route to the right executor (MCP tools only)
+                if self._mcp:
                     mcp_result = await self._mcp.call_tool_by_name(fn_name, fn_args)
                     result = mcp_result.content
                 else:

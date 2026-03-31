@@ -14,7 +14,6 @@ from config.settings import load_settings, Settings
 from api.trace_store import TraceStore
 from core.event_bus import EventBus
 from core.pipeline import ConversationPipeline
-from core.tools.file_ops import FileTools
 from core.turn_logger import TurnLogger
 from providers.base import ChatMessage
 from providers.model_router import ModelRouter
@@ -48,6 +47,7 @@ class SessionManager:
         self.trace_store: TraceStore | None = None
         self.history: list[ChatMessage] = []
         self.system_prompt: str = system_prompt
+        self._base_system_prompt: str = system_prompt  # agent personality only
         self.temperature: float = 0.7
         self._persist_path = str(persist_path)
         self._running = False
@@ -75,13 +75,11 @@ class SessionManager:
         if not self.system_prompt:
             agent_config = _load_agent_config()
             self.system_prompt = agent_config["system_prompt"].strip()
+            self._base_system_prompt = self.system_prompt
             self.temperature = agent_config.get("temperature", 0.7)
         else:
             agent_config = {}
-
-        # Workspace and file tools from agent config
-        workspace_path = agent_config.get("workspace_path", "")
-        file_tools = FileTools(workspace_path) if workspace_path else None
+            self._base_system_prompt = self.system_prompt
 
         # Determine LLM base URL: use proxy when Acervo plugin is enabled
         if self.settings.plugins.acervo.enabled:
@@ -94,7 +92,6 @@ class SessionManager:
             router=self.router,
             model_name=self.settings.lmstudio.model,
             mcp=self.mcp if self.mcp.has_servers else None,
-            file_tools=file_tools,
             base_url_override=main_base_url,
         )
 
@@ -188,6 +185,21 @@ class SessionManager:
         except (json.JSONDecodeError, KeyError):
             return []
 
+    def update_project_context(self, project_name: str, description: str) -> None:
+        """Rebuild the system prompt with project context injected."""
+        if description:
+            self.system_prompt = (
+                f"{self._base_system_prompt}\n\n"
+                f"--- ACTIVE PROJECT ---\n"
+                f"{project_name}: {description}"
+            )
+        else:
+            self.system_prompt = self._base_system_prompt
+
+        # Update system message in history
+        if self.history and self.history[0].role == "system":
+            self.history[0] = ChatMessage(role="system", content=self.system_prompt)
+
     def get_stats(self) -> dict:
         """Return session stats for the frontend."""
         stats: dict[str, Any] = {
@@ -249,6 +261,43 @@ class SessionRegistry:
         )
         await session.init(shared_router=self._router)
         self._session = session
+
+        # Inject active project context into system prompt
+        self._apply_active_project_context(session)
+
+    def _apply_active_project_context(self, session: SessionManager) -> None:
+        """If there's an active project with a description, inject it into the prompt."""
+        try:
+            from db import get_repo
+            active = get_repo().get_active_project()
+            if not active:
+                return
+            config_path = Path(active.path) / ".acervo" / "config.toml"
+            if not config_path.exists():
+                return
+            from acervo.config import AcervoConfig
+            cfg = AcervoConfig.load(config_path)
+            if cfg.description:
+                session.update_project_context(active.name, cfg.description)
+            # Tell the proxy to load this project's graph
+            asyncio.create_task(self._switch_proxy_project(session, active.path))
+        except Exception:
+            pass  # DB or config not ready yet — skip
+
+    @staticmethod
+    async def _switch_proxy_project(session: SessionManager, project_path: str) -> None:
+        """Notify the proxy to switch to the active project (best-effort)."""
+        try:
+            import aiohttp
+            base_url = session.settings.plugins.acervo.proxy_url.rstrip("/").removesuffix("/v1")
+            async with aiohttp.ClientSession() as client:
+                await client.post(
+                    f"{base_url}/acervo/switch-project",
+                    json={"project_path": project_path},
+                    timeout=aiohttp.ClientTimeout(total=5),
+                )
+        except Exception:
+            pass  # Proxy may not be ready yet — select_project will retry
 
     async def cleanup(self) -> None:
         """Shutdown."""

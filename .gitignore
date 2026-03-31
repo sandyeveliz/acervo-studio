@@ -76,6 +76,9 @@ CLAUDE.md
 # Created and maintained by Acervo — config, prompts, graph, vector DB
 .acervo/
 
+# ── Test projects (M0 validation) ────────────────
+project-tests/
+
 # ── Node / web build ─────────────────────────────
 node_modules/
 web/dist/

@@ -1,9 +1,11 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { RefreshCw, FileJson, Trash2 } from "lucide-react";
 import { Separator } from "@/components/ui/separator";
 import { McpConfigDialog } from "./McpConfigDialog";
 import { mcpApi, acervoApi, type AcervoProxyStatus, type AcervoGraphInfo, type ContextLayersResponse } from "@/lib/api";
 import { ContextLayersPanel } from "./ContextLayersPanel";
+import { useConfirm } from "@/hooks/useConfirm";
+import { useProject } from "@/hooks/useProject";
 import type { SessionStats, McpServer } from "@/lib/types";
 
 interface SidebarProps {
@@ -36,6 +38,8 @@ function AcervoStatusDot({ status }: { status: string }) {
 }
 
 export function Sidebar({ stats, connected, onReset }: SidebarProps) {
+  const { confirm, ConfirmDialog } = useConfirm();
+  const { activeId } = useProject();
   const [mcpConfigOpen, setMcpConfigOpen] = useState(false);
   const [mcpServers, setMcpServers] = useState<McpServer[] | null>(null);
   const [probing, setProbing] = useState(false);
@@ -105,7 +109,13 @@ export function Sidebar({ stats, connected, onReset }: SidebarProps) {
   }, []);
 
   const handleClearAll = async () => {
-    if (!window.confirm("Clear conversation and Acervo graph data? This cannot be undone.")) return;
+    const ok = await confirm({
+      title: "Clear all data",
+      description: "Clear conversation and Acervo graph data? This cannot be undone.",
+      confirmLabel: "Clear",
+      variant: "destructive",
+    });
+    if (!ok) return;
     try {
       await acervoApi.clearData();
       onReset();
@@ -115,10 +125,14 @@ export function Sidebar({ stats, connected, onReset }: SidebarProps) {
     }
   };
 
-  // Fetch once on mount
+  // Fetch on mount and whenever the active project changes (via context)
+  const prevActiveId = useRef(activeId);
   useEffect(() => {
+    if (prevActiveId.current !== activeId) {
+      prevActiveId.current = activeId;
+    }
     fetchAcervoData();
-  }, [fetchAcervoData]);
+  }, [fetchAcervoData, activeId]);
 
   // Auto-refresh after each turn completes
   useEffect(() => {
@@ -128,6 +142,8 @@ export function Sidebar({ stats, connected, onReset }: SidebarProps) {
   }, [stats.turns]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
+    <>
+    {ConfirmDialog}
     <div className="w-72 border-l border-border flex flex-col gap-2 p-3 overflow-y-auto">
       {/* Connection + reset */}
       <div className="flex items-center gap-2">
@@ -305,5 +321,6 @@ export function Sidebar({ stats, connected, onReset }: SidebarProps) {
         onSaved={handleConfigSaved}
       />
     </div>
+    </>
   );
 }

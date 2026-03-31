@@ -3,11 +3,13 @@ import { Bot } from "lucide-react";
 import { agentsApi, type AgentSummary } from "@/lib/api";
 import { AgentList } from "@/components/agents/AgentList";
 import { AgentEditor } from "@/components/agents/AgentEditor";
+import { useConfirm } from "@/hooks/useConfirm";
 
 export function AgentsPage() {
   const [agents, setAgents] = useState<AgentSummary[]>([]);
   const [selectedName, setSelectedName] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const { confirm, ConfirmDialog } = useConfirm();
 
   const loadAgents = useCallback(async () => {
     try {
@@ -38,7 +40,13 @@ export function AgentsPage() {
   };
 
   const handleDelete = async (name: string) => {
-    if (!confirm(`Delete agent "${name}"?`)) return;
+    const ok = await confirm({
+      title: "Delete agent",
+      description: `Delete agent "${name}"? This cannot be undone.`,
+      confirmLabel: "Delete",
+      variant: "destructive",
+    });
+    if (!ok) return;
     await agentsApi.delete(name);
     if (selectedName === name) setSelectedName(null);
     await loadAgents();
@@ -54,19 +62,22 @@ export function AgentsPage() {
   }
 
   return (
-    <div className="flex h-full">
-      <div className="w-64">
-        <AgentList
-          agents={agents}
-          selectedName={selectedName}
-          onSelect={setSelectedName}
-          onCreate={handleCreate}
-          onDelete={handleDelete}
-        />
+    <>
+      <div className="flex h-full">
+        <div className="w-64">
+          <AgentList
+            agents={agents}
+            selectedName={selectedName}
+            onSelect={setSelectedName}
+            onCreate={handleCreate}
+            onDelete={handleDelete}
+          />
+        </div>
+        <div className="flex-1 min-w-0">
+          <AgentEditor agentName={selectedName} onSaved={loadAgents} />
+        </div>
       </div>
-      <div className="flex-1 min-w-0">
-        <AgentEditor agentName={selectedName} onSaved={loadAgents} />
-      </div>
-    </div>
+      {ConfirmDialog}
+    </>
   );
 }

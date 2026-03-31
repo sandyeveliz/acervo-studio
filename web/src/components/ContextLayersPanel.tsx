@@ -19,21 +19,32 @@ function sourceIcon(source: string): string {
   }
 }
 
-// ── Layer config ──
+// ── Kind config ──
 
-interface LayerConfig {
-  key: "hot" | "warm" | "cold";
+interface KindConfig {
+  key: string;
   label: string;
   dotClass: string;
   textClass: string;
   defaultExpanded: boolean;
 }
 
-const LAYERS: LayerConfig[] = [
-  { key: "hot", label: "HOT", dotClass: "bg-red-400", textClass: "text-red-400", defaultExpanded: true },
-  { key: "warm", label: "WARM", dotClass: "bg-amber-400", textClass: "text-amber-400", defaultExpanded: true },
-  { key: "cold", label: "COLD", dotClass: "bg-blue-400", textClass: "text-blue-400", defaultExpanded: false },
-];
+const KIND_CONFIGS: Record<string, Omit<KindConfig, "key">> = {
+  entity: { label: "ENTITIES", dotClass: "bg-emerald-400", textClass: "text-emerald-400", defaultExpanded: true },
+  file: { label: "FILES", dotClass: "bg-blue-400", textClass: "text-blue-400", defaultExpanded: false },
+  symbol: { label: "SYMBOLS", dotClass: "bg-purple-400", textClass: "text-purple-400", defaultExpanded: false },
+  section: { label: "SECTIONS", dotClass: "bg-amber-400", textClass: "text-amber-400", defaultExpanded: false },
+};
+
+function getKindConfig(kind: string): KindConfig {
+  const base = KIND_CONFIGS[kind] ?? {
+    label: kind.toUpperCase(),
+    dotClass: "bg-muted-foreground",
+    textClass: "text-muted-foreground",
+    defaultExpanded: false,
+  };
+  return { key: kind, ...base };
+}
 
 // ── Node detail popup ──
 
@@ -68,7 +79,6 @@ function NodeDetailPopup({ node, onClose }: { node: ContextLayerNode; onClose: (
           <DetailRow label="kind" value={node.kind} />
           <DetailRow label="source" value={node.source} />
           <DetailRow label="verified" value={node.verified ? "yes" : "no"} />
-          <DetailRow label="status" value={node.status} />
           <DetailRow label="facts" value={`${node.facts_count}`} />
           <DetailRow label="edges" value={`${node.edges_count}`} />
           <DetailRow label="tokens" value={`~${node.token_count}`} />
@@ -88,15 +98,15 @@ function DetailRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-// ── Layer section ──
+// ── Kind section ──
 
-function LayerSection({
+function KindSection({
   config,
   nodes,
   totalTokens,
   onNodeClick,
 }: {
-  config: LayerConfig;
+  config: KindConfig;
   nodes: ContextLayerNode[];
   totalTokens: number;
   onNodeClick: (node: ContextLayerNode) => void;
@@ -167,19 +177,33 @@ export function ContextLayersPanel({ data }: ContextLayersPanelProps) {
 
   if (!data) return null;
 
+  // Render kinds in a stable order: entity first, then alphabetical
+  const kindOrder = ["entity", "file", "symbol", "section"];
+  const allKinds = Object.keys(data.by_kind).sort((a, b) => {
+    const ai = kindOrder.indexOf(a);
+    const bi = kindOrder.indexOf(b);
+    if (ai !== -1 && bi !== -1) return ai - bi;
+    if (ai !== -1) return -1;
+    if (bi !== -1) return 1;
+    return a.localeCompare(b);
+  });
+
   return (
     <div className="space-y-0.5">
-      <div className="text-[12px] text-muted-foreground/50 font-mono mb-1">Context layers</div>
+      <div className="text-[12px] text-muted-foreground/50 font-mono mb-1">Knowledge graph</div>
 
-      {LAYERS.map((cfg) => (
-        <LayerSection
-          key={cfg.key}
-          config={cfg}
-          nodes={data.layers[cfg.key].nodes}
-          totalTokens={data.layers[cfg.key].total_tokens}
-          onNodeClick={setSelectedNode}
-        />
-      ))}
+      {allKinds.map((kind) => {
+        const group = data.by_kind[kind];
+        return (
+          <KindSection
+            key={kind}
+            config={getKindConfig(kind)}
+            nodes={group.nodes}
+            totalTokens={group.total_tokens}
+            onNodeClick={setSelectedNode}
+          />
+        );
+      })}
 
       {/* Totals */}
       <div className="grid grid-cols-4 gap-x-2 gap-y-0.5 text-[13px] font-mono pt-1.5 border-t border-border/20 mt-1.5">
@@ -189,11 +213,7 @@ export function ContextLayersPanel({ data }: ContextLayersPanelProps) {
         <span className="text-foreground/90">{data.totals.edges}</span>
       </div>
       <div className="text-[12px] text-muted-foreground/50 font-mono">
-        <span className="text-red-400/60">hot {data.totals.hot_tokens}tk</span>
-        {" · "}
-        <span className="text-amber-400/60">warm {data.totals.warm_tokens}tk</span>
-        {" · "}
-        <span className="text-blue-400/60">cold {data.totals.cold_tokens}tk</span>
+        ~{data.totals.total_tokens}tk total
       </div>
 
       {/* Node detail popup */}
