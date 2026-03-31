@@ -896,6 +896,56 @@ async def mark_files_stale(project_id: str, body: MarkStaleRequest):
     return {"marked": marked}
 
 
+@router.get("/projects/{project_id}/operations")
+async def get_project_operations(project_id: str):
+    """Return last operation timestamps derived from graph metadata."""
+    repo = get_repo()
+    entry = repo.get_project(project_id)
+    if not entry:
+        raise HTTPException(404, f"Project not found: {project_id}")
+
+    acervo_dir = Path(entry.path) / ".acervo"
+    if not (acervo_dir / "config.toml").exists():
+        return {"indexed_at": None, "curated_at": None, "synthesized_at": None, "node_count": 0, "edge_count": 0}
+
+    data = _read_graph_files(acervo_dir)
+    nodes = data.get("nodes", [])
+    edges = data.get("edges", [])
+
+    # Last indexed: max indexed_at across file nodes
+    indexed_at = None
+    for n in nodes:
+        if n.get("kind") == "file" and n.get("indexed_at"):
+            ts = n["indexed_at"]
+            if indexed_at is None or ts > indexed_at:
+                indexed_at = ts
+
+    # Last curated: check for curation edges or node attributes
+    curated_at = None
+    for n in nodes:
+        attrs = n.get("attributes", {})
+        if attrs.get("curated_at"):
+            ts = attrs["curated_at"]
+            if curated_at is None or ts > curated_at:
+                curated_at = ts
+
+    # Last synthesized: check synthesis node
+    synthesized_at = None
+    for n in nodes:
+        if n.get("kind") == "synthesis":
+            attrs = n.get("attributes", {})
+            synthesized_at = attrs.get("generated_at")
+            break
+
+    return {
+        "indexed_at": indexed_at,
+        "curated_at": curated_at,
+        "synthesized_at": synthesized_at,
+        "node_count": len(nodes),
+        "edge_count": len(edges),
+    }
+
+
 _reindex_locks: dict[str, bool] = {}
 
 

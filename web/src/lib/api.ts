@@ -444,6 +444,15 @@ export const projectsApi = {
       embedder_url: string;
     }>(`/projects/${projectId}/check-services`, { method: "POST" }),
 
+  getOperations: (projectId: string) =>
+    request<{
+      indexed_at: string | null;
+      curated_at: string | null;
+      synthesized_at: string | null;
+      node_count: number;
+      edge_count: number;
+    }>(`/projects/${projectId}/operations`),
+
   updateDescription: (id: string, description: string) =>
     request<{ saved: boolean; description: string }>(
       `/projects/${id}/description`,

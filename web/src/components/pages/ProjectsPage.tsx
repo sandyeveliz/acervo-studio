@@ -359,6 +359,21 @@ function ProjectDetail({
   onDescriptionSaved: (desc: string) => void;
 }) {
   const [tab, setTab] = useState<"overview" | "files">("overview");
+  const [ops, setOps] = useState<{
+    indexed_at: string | null;
+    curated_at: string | null;
+    synthesized_at: string | null;
+  } | null>(null);
+
+  // Auto-load file status + operations when switching to Indexation tab
+  useEffect(() => {
+    if (tab === "files" && showFilesTab) {
+      if (fileStatus.state.status === "idle") {
+        fileStatus.checkStatus(project.id);
+      }
+      projectsApi.getOperations(project.id).then(setOps).catch(() => {});
+    }
+  }, [tab, project.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const isIndexing = indexingId === project.id && indexing.state.status === "running";
   const indexComplete = indexingId === project.id && indexing.state.status === "complete";
@@ -624,6 +639,15 @@ function ProjectDetail({
               )}
             </div>
 
+            {/* Last operation timestamps */}
+            {ops && (ops.indexed_at || ops.curated_at || ops.synthesized_at) && (
+              <div className="flex items-center gap-4 text-[11px] text-muted-foreground/60 mb-2 shrink-0">
+                {ops.indexed_at && <span>Indexed: {new Date(ops.indexed_at).toLocaleString()}</span>}
+                {ops.curated_at && <span>Curated: {new Date(ops.curated_at).toLocaleString()}</span>}
+                {ops.synthesized_at && <span>Synthesized: {new Date(ops.synthesized_at).toLocaleString()}</span>}
+              </div>
+            )}
+
             {/* Summary */}
             {hasFileStatus && summary && (
               <div className="mb-3 shrink-0">
@@ -635,6 +659,11 @@ function ProjectDetail({
             {hasFileStatus && fileStatus.state.files.length > 0 ? (
               <div className="flex-1 min-h-0">
                 <FileStatusList files={fileStatus.state.files} />
+              </div>
+            ) : fileStatus.state.status === "loading" ? (
+              <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground gap-2">
+                <Loader2 size={32} strokeWidth={1.5} className="animate-spin" />
+                <p className="text-xs">Scanning project files...</p>
               </div>
             ) : !hasFileStatus ? (
               <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground gap-2">
