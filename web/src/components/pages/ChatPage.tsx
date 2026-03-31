@@ -70,7 +70,7 @@ export function ChatPage({
             </button>
           </div>
         )}
-        <div className="flex-1 min-h-0">
+        <div className="flex-1 min-h-0 flex flex-col">
           <ChatArea
             messages={messages}
             currentStream={currentStream}
