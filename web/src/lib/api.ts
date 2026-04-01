@@ -128,6 +128,30 @@ export const graphApi = {
 
   getAnalysis: () =>
     request<GraphAnalysis>("/graph/analysis"),
+
+  createNode: (data: { label: string; type: string; kind?: string; layer?: string; facts?: { fact: string; source?: string }[] }) =>
+    request<GraphNode>("/graph/nodes", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+
+  updateNode: (nodeId: string, data: { label?: string; type?: string; attributes?: Record<string, unknown> }) =>
+    request<GraphNode>(`/graph/nodes/${nodeId}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    }),
+
+  createEdge: (data: { source: string; target: string; relation: string; weight?: number }) =>
+    request<{ created: boolean; source: string; target: string; relation: string }>("/graph/edges", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+
+  deleteEdge: (data: { source: string; target: string; relation: string }) =>
+    request<{ deleted: boolean }>("/graph/edges", {
+      method: "DELETE",
+      body: JSON.stringify(data),
+    }),
 };
 
 // ── MCP ──
@@ -267,7 +291,6 @@ export interface ContextLayerNode {
   kind: string;
   source: string;
   verified: boolean;
-  status: string;
   token_count: number;
   last_active: string;
   facts_count: number;
@@ -275,17 +298,11 @@ export interface ContextLayerNode {
 }
 
 export interface ContextLayersResponse {
-  layers: {
-    hot: { nodes: ContextLayerNode[]; total_tokens: number };
-    warm: { nodes: ContextLayerNode[]; total_tokens: number };
-    cold: { nodes: ContextLayerNode[]; total_tokens: number };
-  };
+  by_kind: Record<string, { nodes: ContextLayerNode[]; total_tokens: number }>;
   totals: {
     nodes: number;
     edges: number;
-    hot_tokens: number;
-    warm_tokens: number;
-    cold_tokens: number;
+    total_tokens: number;
   };
 }
 
@@ -324,6 +341,212 @@ export const acervoApi = {
       method: "DELETE",
     }),
 };
+
+// ── Projects ──
+
+export interface Project {
+  id: string;
+  name: string;
+  path: string;
+  active: boolean;
+  valid: boolean;
+  initialized: boolean;
+  nodes?: number;
+  edges?: number;
+  description?: string;
+}
+
+export interface ProjectsResponse {
+  active: string | null;
+  projects: Project[];
+}
+
+export interface FileStatusItem {
+  path: string;
+  status: "indexed" | "modified" | "new" | "deleted" | "unsupported";
+  indexed_at: string | null;
+  stale_since: string | null;
+}
+
+export interface FileStatusSummary {
+  total: number;
+  indexed: number;
+  modified: number;
+  new: number;
+  deleted: number;
+  unsupported: number;
+}
+
+export interface FileStatusResponse {
+  files: FileStatusItem[];
+  summary: FileStatusSummary;
+}
+
+export interface ProjectConfig {
+  description: string;
+  model: { name: string; url: string; api_key: string };
+  models: {
+    extractor: { name: string; url: string };
+    summarizer: { name: string; url: string };
+  };
+  embeddings: { url: string; model: string; api_key: string };
+  indexing: { extensions: string[]; ignore: string[]; content_type: string };
+  context: { max_tokens: number; history_window: number };
+  proxy: { port: number; target: string };
+}
+
+export const projectsApi = {
+  list: () => request<ProjectsResponse>("/projects"),
+
+  add: (name: string, path: string) =>
+    request<Project & { nodes: number; edges: number }>("/projects", {
+      method: "POST",
+      body: JSON.stringify({ name, path }),
+    }),
+
+  remove: (id: string) =>
+    request<{ removed: string; active: string | null }>(`/projects/${id}`, {
+      method: "DELETE",
+    }),
+
+  select: (id: string) =>
+    request<Project & { nodes: number; edges: number }>(
+      `/projects/${id}/select`,
+      { method: "POST" },
+    ),
+
+  getActive: () =>
+    request<(Project & { nodes: number; edges: number }) | { active: null }>(
+      "/projects/active",
+    ),
+
+  browse: () =>
+    request<{
+      path: string | null;
+      name: string;
+      cancelled: boolean;
+      initialized: boolean;
+      nodes?: number;
+      edges?: number;
+    }>("/projects/browse", { method: "POST" }),
+
+  checkPath: (path: string) =>
+    request<{
+      path: string;
+      name: string;
+      exists: boolean;
+      initialized: boolean;
+      nodes?: number;
+      edges?: number;
+    }>("/projects/check-path", {
+      method: "POST",
+      body: JSON.stringify({ path }),
+    }),
+
+  init: (path: string) =>
+    request<Project & { nodes: number; edges: number }>("/projects/init", {
+      method: "POST",
+      body: JSON.stringify({ path }),
+    }),
+
+  checkServices: (projectId: string) =>
+    request<{
+      llm_available: boolean;
+      embedder_available: boolean;
+      llm_url: string;
+      embedder_url: string;
+    }>(`/projects/${projectId}/check-services`, { method: "POST" }),
+
+  getOperations: (projectId: string) =>
+    request<{
+      indexed_at: string | null;
+      curated_at: string | null;
+      synthesized_at: string | null;
+      node_count: number;
+      edge_count: number;
+    }>(`/projects/${projectId}/operations`),
+
+  getConfig: (projectId: string) =>
+    request<ProjectConfig>(`/projects/${projectId}/config`),
+
+  updateConfig: (projectId: string, config: Partial<ProjectConfig>) =>
+    request<{ saved: boolean }>(`/projects/${projectId}/config`, {
+      method: "PUT",
+      body: JSON.stringify(config),
+    }),
+
+  updateDescription: (id: string, description: string) =>
+    request<{ saved: boolean; description: string }>(
+      `/projects/${id}/description`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({ description }),
+      },
+    ),
+
+  getFileStatus: (id: string) =>
+    request<FileStatusResponse>(`/projects/${id}/files/status`),
+
+  markStale: (id: string, paths: string[]) =>
+    request<{ marked: number }>(`/projects/${id}/files/mark-stale`, {
+      method: "POST",
+      body: JSON.stringify({ paths }),
+    }),
+};
+
+/** Start indexing a project via SSE. Returns an AbortController to cancel. */
+export function indexProject(
+  projectId: string,
+  structuralOnly = false,
+): { controller: AbortController; response: Promise<Response> } {
+  const controller = new AbortController();
+  const response = fetch(`${BASE}/projects/${projectId}/index`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ structural_only: structuralOnly }),
+    signal: controller.signal,
+  });
+  return { controller, response };
+}
+
+/** Start re-indexing stale files via SSE. Returns an AbortController to cancel. */
+export function reindexProject(
+  projectId: string,
+): { controller: AbortController; response: Promise<Response> } {
+  const controller = new AbortController();
+  const response = fetch(`${BASE}/projects/${projectId}/reindex`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    signal: controller.signal,
+  });
+  return { controller, response };
+}
+
+/** Start curation of a project via SSE. Returns an AbortController to cancel. */
+export function curateProject(
+  projectId: string,
+): { controller: AbortController; response: Promise<Response> } {
+  const controller = new AbortController();
+  const response = fetch(`${BASE}/projects/${projectId}/curate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    signal: controller.signal,
+  });
+  return { controller, response };
+}
+
+/** Start synthesis of a project via SSE. Returns an AbortController to cancel. */
+export function synthesizeProject(
+  projectId: string,
+): { controller: AbortController; response: Promise<Response> } {
+  const controller = new AbortController();
+  const response = fetch(`${BASE}/projects/${projectId}/synthesize`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    signal: controller.signal,
+  });
+  return { controller, response };
+}
 
 // ── Agents ──
 

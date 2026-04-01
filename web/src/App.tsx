@@ -1,14 +1,24 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useWebSocket } from "@/hooks/useWebSocket";
+import { ProjectProvider, useProject } from "@/hooks/useProject";
 import { NavSidebar, type Page } from "@/components/NavSidebar";
 import { ChatPage } from "@/components/pages/ChatPage";
 import { GraphPage } from "@/components/pages/GraphPage";
 import { AgentsPage } from "@/components/pages/AgentsPage";
 import { MetricsPage } from "@/components/pages/MetricsPage";
 import { SettingsPage } from "@/components/pages/SettingsPage";
+import { ProjectsPage } from "@/components/pages/ProjectsPage";
 
 export default function App() {
+  return (
+    <ProjectProvider>
+      <AppContent />
+    </ProjectProvider>
+  );
+}
+
+function AppContent() {
   const [page, setPage] = useState<Page>("chat");
   const [theme, setTheme] = useState<"light" | "dark">(
     () => (localStorage.getItem("theme") as "light" | "dark") ?? "dark",
@@ -34,6 +44,16 @@ export default function App() {
     resetSession,
     requestStats,
   } = useWebSocket();
+
+  // Clear chat when the active project changes
+  const { activeId } = useProject();
+  const prevActiveId = useRef(activeId);
+  useEffect(() => {
+    if (prevActiveId.current !== null && activeId !== prevActiveId.current) {
+      resetSession();
+    }
+    prevActiveId.current = activeId;
+  }, [activeId, resetSession]);
 
   return (
     <TooltipProvider delay={300}>
@@ -63,6 +83,7 @@ export default function App() {
             {page === "graph" && <GraphPage />}
             {page === "metrics" && <MetricsPage />}
             {page === "agents" && <AgentsPage />}
+            {page === "projects" && <ProjectsPage />}
             {page === "settings" && <SettingsPage onSettingsSaved={requestStats} />}
           </main>
         </div>

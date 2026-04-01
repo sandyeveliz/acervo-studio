@@ -85,6 +85,24 @@ export function GraphPage() {
     loadGraph();
   };
 
+  const handleCreateEdge = async (source: string, target: string, relation: string) => {
+    try {
+      await graphApi.createEdge({ source, target, relation });
+      loadGraph();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to create edge");
+    }
+  };
+
+  const handleDeleteEdge = async (source: string, target: string, relation: string) => {
+    try {
+      await graphApi.deleteEdge({ source, target, relation });
+      loadGraph();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to delete edge");
+    }
+  };
+
   const handleExport = async () => {
     const data = await graphApi.exportGraph();
     const blob = new Blob([JSON.stringify(data, null, 2)], {
@@ -233,6 +251,8 @@ export function GraphPage() {
             onDeleteFact={handleDeleteFact}
             onMerge={handleMerge}
             onSelectNode={setSelectedNodeId}
+            onCreateEdge={handleCreateEdge}
+            onDeleteEdge={handleDeleteEdge}
           />
         </div>
       </div>

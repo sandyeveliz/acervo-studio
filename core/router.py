@@ -51,12 +51,13 @@ def decide_route(user_msg: str, current_topic: str, memory=None) -> tuple[Route,
         if node and node.get("facts"):
             return Route.MEMORY, f"topic '{current_topic}' has {len(node['facts'])} facts"
 
-        # Check if any active nodes have facts
-        hot_nodes = memory.graph.get_nodes_by_status("hot")
-        warm_nodes = memory.graph.get_nodes_by_status("warm")
-        active_nodes = [n for n in hot_nodes + warm_nodes if n.get("facts")]
-        if active_nodes:
-            return Route.MEMORY, f"{len(active_nodes)} active nodes with facts"
+        # Check if any entity nodes have facts
+        entity_nodes = [
+            n for n in memory.graph.get_all_nodes()
+            if n.get("kind", "entity") == "entity" and n.get("facts")
+        ]
+        if entity_nodes:
+            return Route.MEMORY, f"{len(entity_nodes)} entity nodes with facts"
 
         # Topic exists but NO verified facts
         if node:
