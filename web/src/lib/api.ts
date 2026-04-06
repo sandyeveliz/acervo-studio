@@ -596,6 +596,167 @@ export const traceApi = {
     request<{ cleared: boolean }>("/trace", { method: "DELETE" }),
 };
 
+// ── Telemetry ──
+
+export interface TelemetryS1 {
+  intent: string;
+  topic: string;
+  confidence: number;
+  latency_ms: number;
+  ok: boolean;
+}
+
+export interface TelemetryS2 {
+  source: string;
+  nodes_activated: number;
+  facts_found: number;
+  latency_ms: number;
+  ok: boolean;
+}
+
+export interface TelemetryS3 {
+  warm_tokens: number;
+  hot_tokens: number;
+  total_tokens: number;
+  latency_ms: number;
+  ok: boolean;
+}
+
+export interface TelemetryS15 {
+  entities_created: number;
+  facts_created: number;
+  facts_filtered: { entity: string; fact: string; reason: string }[];
+  latency_ms: number;
+}
+
+export interface TelemetryLLM {
+  model: string;
+  provider: string;
+  latency_ms: number;
+  ttft_ms: number;
+  tokens_input: number;
+  tokens_output: number;
+  think_tokens: number;
+  tokens_per_sec: number;
+}
+
+export interface TelemetryGraph {
+  node_count: number;
+  edge_count: number;
+  node_delta: number;
+  edge_delta: number;
+}
+
+export interface HardwareInfo {
+  vram_used_mb: number;
+  vram_total_mb: number;
+  gpu_util_pct: number;
+  model_loaded: boolean;
+}
+
+export interface TelemetrySpan {
+  turn_id: number;
+  session_id: string;
+  project: string | null;
+  timestamp: string;
+  user_msg: string;
+  s1: TelemetryS1;
+  s2: TelemetryS2;
+  s3: TelemetryS3;
+  s15: TelemetryS15;
+  llm: TelemetryLLM;
+  graph: TelemetryGraph;
+  failures: string[];
+  hardware?: HardwareInfo;
+}
+
+export interface TelemetryResponse {
+  spans: TelemetrySpan[];
+  session: string;
+  hardware: HardwareInfo | null;
+}
+
+export const telemetryApi = {
+  get: (last?: number) =>
+    request<TelemetryResponse>(`/acervo/telemetry${last ? `?last=${last}` : ""}`),
+};
+
+// ── Annotations ──
+
+export interface AnnotationS1Expected {
+  intent?: string;
+  topic?: { action: string; label?: string };
+  entities: { id: string; label: string; type: string; layer: string }[];
+  relations: { source: string; relation: string; target: string }[];
+  facts: { entity: string; fact: string; speaker: string }[];
+}
+
+export interface AnnotationS2Expected {
+  nodes_should_activate: string[];
+  notes: string;
+}
+
+export interface AnnotationS3Expected {
+  context_adequate: boolean;
+  notes: string;
+}
+
+export interface AnnotationLLMExpected {
+  response_quality: number; // 1-5
+  used_context_correctly: boolean;
+  notes: string;
+}
+
+export interface AnnotationS15Expected {
+  entities: { id: string; label: string; type: string; layer: string }[];
+  relations: { source: string; relation: string; target: string }[];
+  merges: { from_id: string; into_id: string }[];
+  notes: string;
+}
+
+export interface Annotation {
+  turn_id: number;
+  status: "pending" | "editing" | "annotated";
+  observations: string;
+  s1_expected?: AnnotationS1Expected;
+  s2_expected?: AnnotationS2Expected;
+  s3_expected?: AnnotationS3Expected;
+  llm_expected?: AnnotationLLMExpected;
+  s15_expected?: AnnotationS15Expected;
+}
+
+export const annotationApi = {
+  getAll: () =>
+    request<{ annotations: Record<string, Annotation> }>("/annotations"),
+
+  get: (turnId: number) =>
+    request<Annotation>(`/annotations/${turnId}`),
+
+  save: (turnId: number, annotation: Partial<Annotation>) =>
+    request<{ saved: boolean }>(`/annotations/${turnId}`, {
+      method: "PUT",
+      body: JSON.stringify(annotation),
+    }),
+
+  delete: (turnId: number) =>
+    request<{ deleted: boolean }>(`/annotations/${turnId}`, { method: "DELETE" }),
+
+  exportJsonl: () =>
+    request<{ format: string; count: number; examples: Record<string, unknown>[] }>(
+      "/annotations/export/batch?format=jsonl",
+    ),
+
+  exportJson: () =>
+    request<{ format: string; annotations: Record<string, Annotation>; spans: TelemetrySpan[] }>(
+      "/annotations/export/batch?format=json",
+    ),
+
+  exportTurn: (turnId: number, format: "json" | "jsonl" = "json") =>
+    request<{ format: string; span?: TelemetrySpan; annotation?: Annotation; examples?: Record<string, unknown>[]; count?: number }>(
+      `/annotations/export/turn/${turnId}?format=${format}`,
+    ),
+};
+
 export const systemPromptApi = {
   get: () => request<{ prompt: string; default: string }>("/system-prompt"),
 
@@ -604,4 +765,46 @@ export const systemPromptApi = {
       method: "PUT",
       body: JSON.stringify({ content: prompt }),
     }),
+};
+
+// ── Ollama Monitor ──
+
+export interface OllamaModel {
+  name: string;
+  size_mb: number;
+  vram_mb: number;
+  parameter_size: string;
+  quantization: string;
+  family: string;
+  expires_at?: string;
+}
+
+export interface OllamaAvailableModel {
+  name: string;
+  size_mb: number;
+  parameter_size: string;
+  quantization: string;
+  family: string;
+}
+
+export interface OllamaStatus {
+  ollama: {
+    running: boolean;
+    models_loaded: OllamaModel[];
+    models_available: OllamaAvailableModel[];
+  };
+  gpu: {
+    vram_used_mb: number;
+    vram_total_mb: number;
+    gpu_util_pct: number;
+    gpu_name: string;
+  };
+  ram: {
+    used_mb: number;
+    total_mb: number;
+  };
+}
+
+export const ollamaApi = {
+  getStatus: () => request<OllamaStatus>("/ollama/status"),
 };

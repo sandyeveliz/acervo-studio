@@ -14,6 +14,8 @@ from config.settings import load_settings, Settings
 from api.trace_store import TraceStore
 from core.event_bus import EventBus
 from core.pipeline import ConversationPipeline
+from core.annotation_store import AnnotationStore
+from core.telemetry_collector import TelemetryCollector
 from core.turn_logger import TurnLogger
 from providers.base import ChatMessage
 from providers.model_router import ModelRouter
@@ -45,6 +47,8 @@ class SessionManager:
         self.pipeline: ConversationPipeline | None = None
         self.turn_logger: TurnLogger | None = None
         self.trace_store: TraceStore | None = None
+        self.telemetry: TelemetryCollector | None = None
+        self.annotations: AnnotationStore | None = None
         self.history: list[ChatMessage] = []
         self.system_prompt: str = system_prompt
         self._base_system_prompt: str = system_prompt  # agent personality only
@@ -106,6 +110,18 @@ class SessionManager:
         self.trace_store = TraceStore(persist_path=trace_path)
         self.trace_store.subscribe(self.bus)
 
+        # Telemetry collector (structured per-turn spans)
+        # Path is set later by switch_telemetry_path() when a project is selected
+        self.telemetry = TelemetryCollector(
+            persist_path=log_dir / "telemetry.jsonl",
+            session_id=self.name,
+        )
+        self.telemetry.subscribe(self.bus)
+
+        # Annotation store (per-turn expected outputs for training data)
+        # Path is set later by switch_telemetry_path() when a project is selected
+        self.annotations = AnnotationStore(persist_path=log_dir / "annotations.jsonl")
+
         # Load persisted history or start fresh
         self.history = self._load_history()
         if not self.history:
@@ -143,7 +159,7 @@ class SessionManager:
         return self._running
 
     async def reset(self) -> None:
-        """Clear chat history and trace."""
+        """Clear chat history, trace, telemetry, and annotations."""
         self.history = [
             ChatMessage(role="system", content=self.system_prompt),
         ]
@@ -151,6 +167,16 @@ class SessionManager:
         self._save_history()
         if self.trace_store:
             self.trace_store.clear()
+        if self.telemetry:
+            self.telemetry._spans.clear()
+            self.telemetry._turn_count = 0
+            self.telemetry._prev_graph = (0, 0)
+            if self.telemetry._persist_path and self.telemetry._persist_path.exists():
+                self.telemetry._persist_path.unlink()
+        if self.annotations:
+            self.annotations._annotations.clear()
+            if self.annotations._path and self.annotations._path.exists():
+                self.annotations._path.unlink()
 
     # ── History persistence ──
 
@@ -222,6 +248,39 @@ class SessionManager:
         }
         return stats
 
+    def switch_telemetry_path(self, project_path: str) -> None:
+        """Switch telemetry and annotation storage to a project's .acervo/ dir.
+
+        Called when the active project changes so that telemetry data
+        is stored per-project and survives project switching.
+        If the project has no .acervo/, data stays in memory only (no persistence).
+        """
+        acervo_dir = Path(project_path) / ".acervo"
+        has_acervo = acervo_dir.exists()
+
+        tel_path = (acervo_dir / "telemetry.jsonl") if has_acervo else None
+        ann_path = (acervo_dir / "annotations.jsonl") if has_acervo else None
+
+        # Reset and reload telemetry collector
+        if self.telemetry:
+            self.telemetry._persist_path = tel_path
+            self.telemetry._spans.clear()
+            self.telemetry._turn_count = 0
+            self.telemetry._prev_graph = (0, 0)
+            if tel_path:
+                self.telemetry._load_from_disk()
+
+        # Reset and reload annotation store
+        if self.annotations:
+            self.annotations._path = ann_path
+            self.annotations._annotations.clear()
+            if ann_path:
+                self.annotations._load()
+
+        # Also clear trace store (events belong to previous project)
+        if self.trace_store:
+            self.trace_store.clear()
+
     async def cleanup(self) -> None:
         """Shutdown: close providers."""
         if self.router:
@@ -272,6 +331,8 @@ class SessionRegistry:
             active = get_repo().get_active_project()
             if not active:
                 return
+            # Switch telemetry/annotations to project directory
+            session.switch_telemetry_path(active.path)
             config_path = Path(active.path) / ".acervo" / "config.toml"
             if not config_path.exists():
                 return

@@ -375,6 +375,9 @@ async def select_project(project_id: str, request: Request):
     session = _get_session(request)
     session.update_project_context(project.name, resp.get("description", ""))
 
+    # Switch telemetry and annotations to project directory
+    session.switch_telemetry_path(project.path)
+
     # Tell the proxy to switch to this project's graph
     await _switch_acervo_proxy_project(session, project.path)
 
@@ -1803,6 +1806,267 @@ async def clear_trace(request: Request):
     if session.trace_store:
         session.trace_store.clear()
     return {"cleared": True}
+
+
+# ── Telemetry endpoints ──
+
+
+@router.get("/acervo/telemetry")
+async def get_telemetry(request: Request, last: int | None = None):
+    """Return structured telemetry spans for the current session."""
+    session = _get_session(request)
+    if not session.telemetry:
+        return {"spans": [], "session": session.name}
+    spans = session.telemetry.get_spans(last=last)
+    hardware = await session.telemetry.get_hardware_info()
+    return {"spans": spans, "session": session.name, "hardware": hardware}
+
+
+# ── Annotations (training data) ──
+
+
+@router.get("/annotations")
+async def get_annotations(request: Request):
+    """Return all annotations keyed by turn_id."""
+    session = _get_session(request)
+    if not session.annotations:
+        return {"annotations": {}}
+    return {"annotations": session.annotations.get_all()}
+
+
+@router.get("/annotations/{turn_id}")
+async def get_annotation(request: Request, turn_id: int):
+    """Return annotation for a specific turn."""
+    session = _get_session(request)
+    if not session.annotations:
+        raise HTTPException(404, "Annotations not available")
+    ann = session.annotations.get(turn_id)
+    if not ann:
+        raise HTTPException(404, f"No annotation for turn {turn_id}")
+    return ann
+
+
+@router.put("/annotations/{turn_id}")
+async def save_annotation(request: Request, turn_id: int, body: dict[str, Any]):
+    """Save or update annotation for a turn."""
+    session = _get_session(request)
+    if not session.annotations:
+        raise HTTPException(500, "Annotations not available")
+    session.annotations.save(turn_id, body)
+    return {"saved": True, "turn_id": turn_id}
+
+
+@router.delete("/annotations/{turn_id}")
+async def delete_annotation(request: Request, turn_id: int):
+    """Delete annotation for a turn."""
+    session = _get_session(request)
+    if not session.annotations:
+        raise HTTPException(500, "Annotations not available")
+    deleted = session.annotations.delete(turn_id)
+    return {"deleted": deleted, "turn_id": turn_id}
+
+
+@router.get("/annotations/export/batch")
+async def export_annotations(request: Request, format: str = "jsonl"):
+    """Export annotations. format=jsonl (training), json (full dump), md (report)."""
+    session = _get_session(request)
+    if not session.annotations or not session.telemetry:
+        return {"error": "Not available"}
+
+    if format == "jsonl":
+        spans = session.telemetry.get_spans()
+        # Enrich spans with stage_data from trace events
+        if session.trace_store:
+            events = session.trace_store.get_all()
+            for span in spans:
+                turn = span.get("turn_id")
+                for evt in events:
+                    if evt.get("turn") == turn and evt.get("type") == "acervo_enrich_result":
+                        span["stage_data"] = evt.get("stage_data", "")
+                        break
+        examples = session.annotations.export_training_jsonl(spans)
+        return {"format": "jsonl", "count": len(examples), "examples": examples}
+
+    elif format == "json":
+        return {
+            "format": "json",
+            "annotations": session.annotations.get_all(),
+            "spans": session.telemetry.get_spans(),
+        }
+
+    else:
+        # Markdown report
+        annotations = session.annotations.get_all()
+        lines = ["# Annotation Report\n"]
+        for turn_id, ann in sorted(annotations.items()):
+            status = ann.get("status", "pending")
+            obs = ann.get("observations", "")
+            lines.append(f"## Turn {turn_id} [{status}]\n")
+            if obs:
+                lines.append(f"**Observations:** {obs}\n")
+            s1 = ann.get("s1_expected", {})
+            if s1:
+                lines.append(f"**S1 Expected:** {len(s1.get('entities', []))} entities, "
+                             f"{len(s1.get('relations', []))} relations, "
+                             f"{len(s1.get('facts', []))} facts\n")
+            lines.append("")
+        return {"format": "md", "content": "\n".join(lines)}
+
+
+@router.get("/annotations/export/turn/{turn_id}")
+async def export_turn(request: Request, turn_id: int, format: str = "json"):
+    """Export a single turn with span + annotation data. No annotation required."""
+    session = _get_session(request)
+    if not session.telemetry:
+        raise HTTPException(500, "Telemetry not available")
+
+    # Find the span
+    span = None
+    for s in session.telemetry.get_spans():
+        if s.get("turn_id") == turn_id:
+            span = s
+            break
+    if not span:
+        raise HTTPException(404, f"No span for turn {turn_id}")
+
+    # Enrich with stage_data from trace events
+    if session.trace_store:
+        for evt in session.trace_store.get_all():
+            if evt.get("turn") == turn_id and evt.get("type") == "acervo_enrich_result":
+                span["stage_data"] = evt.get("stage_data", "")
+                break
+
+    # Get annotation if exists
+    ann = session.annotations.get(turn_id) if session.annotations else None
+
+    if format == "jsonl" and ann and ann.get("s1_expected"):
+        # Generate training example
+        examples = session.annotations.export_training_jsonl([span], annotated_only=False)
+        return {"format": "jsonl", "count": len(examples), "examples": examples}
+
+    # Default: full turn dump
+    return {"format": "json", "span": span, "annotation": ann}
+
+
+# ── Ollama monitoring ──
+
+
+@router.get("/ollama/status")
+async def get_ollama_status(request: Request):
+    """Live Ollama status: loaded models, GPU/VRAM, system RAM."""
+    import shutil
+    import subprocess
+
+    session = _get_session(request)
+    ollama_url = session.settings.ollama.base_url if session.settings else "http://localhost:11434"
+
+    result: dict[str, Any] = {
+        "ollama": {"running": False, "models_loaded": [], "models_available": []},
+        "gpu": {"vram_used_mb": 0, "vram_total_mb": 0, "gpu_util_pct": 0, "gpu_name": ""},
+        "ram": {"used_mb": 0, "total_mb": 0},
+    }
+
+    # ── Ollama /api/ps (loaded models) ──
+    try:
+        import aiohttp
+        async with aiohttp.ClientSession() as client:
+            async with client.get(f"{ollama_url}/api/ps", timeout=aiohttp.ClientTimeout(total=3)) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    result["ollama"]["running"] = True
+                    for m in data.get("models", []):
+                        result["ollama"]["models_loaded"].append({
+                            "name": m.get("name", ""),
+                            "size_mb": round(m.get("size", 0) / 1024 / 1024),
+                            "vram_mb": round(m.get("size_vram", 0) / 1024 / 1024),
+                            "parameter_size": m.get("details", {}).get("parameter_size", ""),
+                            "quantization": m.get("details", {}).get("quantization_level", ""),
+                            "family": m.get("details", {}).get("family", ""),
+                            "expires_at": m.get("expires_at", ""),
+                        })
+    except Exception:
+        pass
+
+    # ── Ollama /api/tags (available models) ──
+    try:
+        import aiohttp
+        async with aiohttp.ClientSession() as client:
+            async with client.get(f"{ollama_url}/api/tags", timeout=aiohttp.ClientTimeout(total=3)) as resp:
+                if resp.status == 200:
+                    result["ollama"]["running"] = True
+                    data = await resp.json()
+                    for m in data.get("models", []):
+                        result["ollama"]["models_available"].append({
+                            "name": m.get("name", ""),
+                            "size_mb": round(m.get("size", 0) / 1024 / 1024),
+                            "parameter_size": m.get("details", {}).get("parameter_size", ""),
+                            "quantization": m.get("details", {}).get("quantization_level", ""),
+                            "family": m.get("details", {}).get("family", ""),
+                        })
+    except Exception:
+        pass
+
+    # ── nvidia-smi (GPU) ──
+    nvidia_smi = shutil.which("nvidia-smi")
+    if nvidia_smi:
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                nvidia_smi,
+                "--query-gpu=name,memory.used,memory.total,utilization.gpu",
+                "--format=csv,noheader,nounits",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
+            if proc.returncode == 0:
+                parts = stdout.decode().strip().split(", ")
+                if len(parts) >= 4:
+                    result["gpu"]["gpu_name"] = parts[0].strip()
+                    result["gpu"]["vram_used_mb"] = int(parts[1].strip())
+                    result["gpu"]["vram_total_mb"] = int(parts[2].strip())
+                    result["gpu"]["gpu_util_pct"] = int(parts[3].strip())
+        except Exception:
+            pass
+
+    # ── System RAM (cross-platform, no dependencies) ──
+    try:
+        import platform as _platform
+        if _platform.system() == "Windows":
+            proc = await asyncio.create_subprocess_exec(
+                "wmic", "OS", "get",
+                "FreePhysicalMemory,TotalVisibleMemorySize",
+                "/Value",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
+            if proc.returncode == 0:
+                text = stdout.decode()
+                free_kb = total_kb = 0
+                for line in text.strip().splitlines():
+                    line = line.strip()
+                    if line.startswith("FreePhysicalMemory="):
+                        free_kb = int(line.split("=")[1])
+                    elif line.startswith("TotalVisibleMemorySize="):
+                        total_kb = int(line.split("=")[1])
+                result["ram"]["total_mb"] = total_kb // 1024
+                result["ram"]["used_mb"] = (total_kb - free_kb) // 1024
+        else:
+            # Linux/Mac: read /proc/meminfo
+            with open("/proc/meminfo") as f:
+                meminfo = {}
+                for line in f:
+                    parts = line.split(":")
+                    if len(parts) == 2:
+                        meminfo[parts[0].strip()] = int(parts[1].strip().split()[0])
+                total = meminfo.get("MemTotal", 0)
+                available = meminfo.get("MemAvailable", 0)
+                result["ram"]["total_mb"] = total // 1024
+                result["ram"]["used_mb"] = (total - available) // 1024
+    except Exception:
+        pass
+
+    return result
 
 
 # ── Settings endpoints ──

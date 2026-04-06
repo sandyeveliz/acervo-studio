@@ -57,7 +57,7 @@ export function ProjectsPage() {
       const hasNodes = (p.nodes ?? 0) > 0;
       if (hasNodes) map[p.id] = "indexed";
       else if (p.initialized) map[p.id] = "initialized";
-      else map[p.id] = "unknown";
+      else map[p.id] = "not_initialized";
     }
     setStatusMap(map);
   }, [projects]);
@@ -282,18 +282,11 @@ export function ProjectsPage() {
             onCheckStatus={async () => {
               setStatusMap((m) => ({ ...m, [selectedProject.id]: "checking" }));
               try {
-                const data = await projectsApi.list();
-                const fresh = data.projects.find((p) => p.id === selectedProject.id);
-                if (!fresh) return;
-                const hasNodes = (fresh.nodes ?? 0) > 0;
-                setStatusMap((m) => ({
-                  ...m,
-                  [selectedProject.id]: hasNodes ? "indexed" : fresh.initialized ? "initialized" : "not_initialized",
-                }));
-                setProjects((prev) => prev.map((p) => (p.id === selectedProject.id ? fresh : p)));
+                await refreshProjects();
               } catch {
-                setStatusMap((m) => ({ ...m, [selectedProject.id]: "not_initialized" }));
+                // Network error — revert to unknown
               }
+              // useEffect on [projects] will recompute the correct status
             }}
             onDescriptionSaved={(desc) =>
               setProjects((prev) =>
@@ -963,26 +956,40 @@ function ProjectDescription({
 
   if (editing) {
     return (
-      <textarea
-        ref={inputRef}
-        value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={save}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" && !e.shiftKey) {
-            e.preventDefault();
-            save();
-          }
-          if (e.key === "Escape") {
-            setDraft(value);
-            setEditing(false);
-          }
-        }}
-        onClick={(e) => e.stopPropagation()}
-        rows={2}
-        className="w-full mt-1 px-2 py-1 text-xs rounded border border-border bg-background text-foreground placeholder:text-muted-foreground/50 resize-none"
-        placeholder="Project description (used for system prompt context)"
-      />
+      <div className="mt-1 flex gap-1.5" onClick={(e) => e.stopPropagation()}>
+        <textarea
+          ref={inputRef}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              save();
+            }
+            if (e.key === "Escape") {
+              setDraft(value);
+              setEditing(false);
+            }
+          }}
+          rows={2}
+          className="flex-1 px-2 py-1 text-xs rounded border border-border bg-background text-foreground placeholder:text-muted-foreground/50 resize-none"
+          placeholder="Project description (used for system prompt context)"
+        />
+        <div className="flex flex-col gap-1 shrink-0">
+          <button
+            onClick={save}
+            className="px-2 py-1 text-xs rounded bg-primary text-primary-foreground hover:bg-primary/90 cursor-pointer"
+          >
+            Save
+          </button>
+          <button
+            onClick={() => { setDraft(value); setEditing(false); }}
+            className="px-2 py-1 text-xs rounded border border-border text-muted-foreground hover:text-foreground cursor-pointer"
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
     );
   }
 

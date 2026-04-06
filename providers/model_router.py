@@ -44,9 +44,9 @@ class ModelRouter:
     """Routes calls to the right provider.
 
     LLM providers:
-    - lmstudio: main chat model (acervo-extractor-qwen3.5-9b)
+    - lmstudio: main chat model via Ollama OpenAI-compat endpoint
     - lmstudio_utility: utility tasks (same model by default, can be overridden)
-    - ollama: embeddings only
+    - ollama: embeddings only (native Ollama API)
     """
 
     def __init__(self, settings: Settings) -> None:
@@ -103,7 +103,7 @@ class ModelRouter:
             and response.latency_ms > self._latency_threshold_ms
         ):
             log.warning(
-                "LM Studio latency %.0fms exceeds threshold %dms — "
+                "Chat model latency %.0fms exceeds threshold %dms — "
                 "remote fallback not yet configured",
                 response.latency_ms,
                 self._latency_threshold_ms,

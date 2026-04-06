@@ -32,7 +32,7 @@ class OllamaProvider(ModelProvider):
         tools: list[dict] | None = None,
     ) -> ChatResponse:
         raise NotImplementedError(
-            "Ollama provider handles embeddings only. Use LMStudioProvider for chat."
+            "Ollama native provider handles embeddings only. Chat uses the OpenAI-compat endpoint via LMStudioProvider."
         )
 
     async def chat_stream(
@@ -43,7 +43,7 @@ class OllamaProvider(ModelProvider):
         max_tokens: int | None = None,
     ) -> AsyncIterator[StreamChunk]:
         raise NotImplementedError(
-            "Ollama provider handles embeddings only. Use LMStudioProvider for chat."
+            "Ollama native provider handles embeddings only. Chat uses the OpenAI-compat endpoint via LMStudioProvider."
         )
         yield  # type: ignore[misc]  # Make this a generator for type checking
 

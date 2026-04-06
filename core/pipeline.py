@@ -335,13 +335,15 @@ class ConversationPipeline:
             return ""
 
     async def _query_indexing_result(self) -> None:
-        """Query the Acervo proxy for post-LLM indexing stats."""
+        """Query the Acervo proxy for post-LLM indexing stats + graph counts."""
         proxy_base = self._base_url_override.rstrip("/").removesuffix("/v1")
-        url = f"{proxy_base}/acervo/last-turn"
         try:
             from urllib.request import urlopen
             import asyncio
             loop = asyncio.get_event_loop()
+
+            # Query last-turn for extraction stats
+            url = f"{proxy_base}/acervo/last-turn"
             resp_bytes = await loop.run_in_executor(None, lambda: urlopen(url, timeout=3).read())
             data = json.loads(resp_bytes)
             entities = data.get("entities_extracted", 0)
@@ -353,6 +355,20 @@ class ConversationPipeline:
                     facts_extracted=facts,
                     source=data.get("indexing_source", "conversation"),
                     verified=data.get("indexing_verified", False),
+                ))
+
+            # Query status for graph counts → emit GraphUpdated so telemetry picks it up
+            url2 = f"{proxy_base}/acervo/status"
+            resp2 = await loop.run_in_executor(None, lambda: urlopen(url2, timeout=3).read())
+            status = json.loads(resp2)
+            graph = status.get("graph", {})
+            node_count = graph.get("node_count", 0)
+            edge_count = graph.get("edge_count", 0)
+            if node_count > 0 or edge_count > 0:
+                from core.events import GraphUpdated
+                await self._bus.emit(GraphUpdated(
+                    node_count=node_count,
+                    edge_count=edge_count,
                 ))
         except Exception:
             pass
