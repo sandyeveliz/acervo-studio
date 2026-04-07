@@ -6,7 +6,9 @@ import { NavSidebar, type Page } from "@/components/NavSidebar";
 import { ChatPage } from "@/components/pages/ChatPage";
 import { GraphPage } from "@/components/pages/GraphPage";
 import { AgentsPage } from "@/components/pages/AgentsPage";
-import { MetricsPage } from "@/components/pages/MetricsPage";
+import { SkillsPage } from "@/components/pages/SkillsPage";
+import { TelemetryPage } from "@/components/pages/TelemetryPage";
+import { OllamaPage } from "@/components/pages/OllamaPage";
 import { SettingsPage } from "@/components/pages/SettingsPage";
 import { ProjectsPage } from "@/components/pages/ProjectsPage";
 
@@ -43,6 +45,7 @@ function AppContent() {
     sendMessage,
     resetSession,
     requestStats,
+    retryLast,
   } = useWebSocket();
 
   // Clear chat when the active project changes
@@ -78,11 +81,14 @@ function AppContent() {
                 connected={connected}
                 onSend={sendMessage}
                 onReset={resetSession}
+                onRetry={retryLast}
               />
             )}
             {page === "graph" && <GraphPage />}
-            {page === "metrics" && <MetricsPage />}
+            {page === "telemetry" && <TelemetryPage />}
+            {page === "ollama" && <OllamaPage />}
             {page === "agents" && <AgentsPage />}
+            {page === "skills" && <SkillsPage />}
             {page === "projects" && <ProjectsPage />}
             {page === "settings" && <SettingsPage onSettingsSaved={requestStats} />}
           </main>

@@ -1,16 +1,23 @@
-import { MessageSquare, Network, Bot, Settings, BarChart3, FolderOpen, Sun, Moon } from "lucide-react";
+import { MessageSquare, Network, Bot, Settings, BarChart3, FolderOpen, Sun, Moon, Cpu, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ProjectSelector } from "./ProjectSelector";
 
-export type Page = "chat" | "graph" | "metrics" | "agents" | "projects" | "settings";
+export type Page = "chat" | "graph" | "telemetry" | "ollama" | "agents" | "skills" | "projects" | "settings";
 
-const NAV_ITEMS: { page: Page; icon: typeof MessageSquare; label: string }[] = [
+type NavItem = { page: Page; icon: typeof MessageSquare; label: string };
+
+const MAIN_NAV: NavItem[] = [
   { page: "chat", icon: MessageSquare, label: "Chat" },
-  { page: "graph", icon: Network, label: "Graph" },
-  { page: "metrics", icon: BarChart3, label: "Metrics" },
-  { page: "agents", icon: Bot, label: "Agents" },
   { page: "projects", icon: FolderOpen, label: "Projects" },
+  { page: "agents", icon: Bot, label: "Agents" },
+  { page: "skills", icon: Sparkles, label: "Skills" },
   { page: "settings", icon: Settings, label: "Settings" },
+];
+
+const ACERVO_NAV: NavItem[] = [
+  { page: "graph", icon: Network, label: "Graph" },
+  { page: "telemetry", icon: BarChart3, label: "Metrics" },
+  { page: "ollama", icon: Cpu, label: "Ollama" },
 ];
 
 interface NavSidebarProps {
@@ -30,7 +37,31 @@ export function NavSidebar({ currentPage, onNavigate, connected, theme, onToggle
 
       <ProjectSelector />
 
-      {NAV_ITEMS.map(({ page, icon: Icon, label }) => (
+      {MAIN_NAV.map(({ page, icon: Icon, label }) => (
+        <button
+          key={page}
+          onClick={() => onNavigate(page)}
+          className={cn(
+            "flex items-center gap-2.5 w-full px-2 py-2 rounded-lg text-sm transition-colors cursor-pointer",
+            currentPage === page
+              ? "bg-sidebar-accent text-sidebar-accent-foreground font-medium"
+              : "text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent/50",
+          )}
+        >
+          <Icon size={18} />
+          {label}
+        </button>
+      ))}
+
+      {/* Divider — debug / dev tools section */}
+      <div className="mt-3 mb-1 px-2">
+        <div className="border-t border-border" />
+        <span className="block mt-2 text-[10px] font-semibold text-sidebar-foreground/30 uppercase tracking-widest">
+          Acervo
+        </span>
+      </div>
+
+      {ACERVO_NAV.map(({ page, icon: Icon, label }) => (
         <button
           key={page}
           onClick={() => onNavigate(page)}

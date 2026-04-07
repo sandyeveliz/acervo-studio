@@ -31,7 +31,7 @@ export function ModelSettings({ settings, draft, onUpdate }: ModelSettingsProps)
           </CardTitle>
         </CardHeader>
         <CardContent className="divide-y divide-border">
-          <SettingsField label="Base URL" description="LM Studio API endpoint" modified={isModified(draft, "lmstudio", "base_url")}>
+          <SettingsField label="Base URL" description="Ollama OpenAI-compatible endpoint" modified={isModified(draft, "lmstudio", "base_url")}>
             <TextField
               value={getVal(settings, draft, "lmstudio", "base_url", "")}
               onChange={(v) => onUpdate("lmstudio", "base_url", v)}

@@ -9,6 +9,7 @@ interface ChatAreaProps {
   isProcessing: boolean;
   pipelineSteps: StepGroup[];
   onSend: (text: string) => void;
+  onRetry?: () => void;
 }
 
 export function ChatArea({
@@ -18,6 +19,7 @@ export function ChatArea({
   isProcessing,
   pipelineSteps,
   onSend,
+  onRetry,
 }: ChatAreaProps) {
   return (
     <div className="flex flex-col flex-1 min-h-0">
@@ -27,6 +29,7 @@ export function ChatArea({
         currentStream={currentStream}
         isStreaming={isStreaming}
         isProcessing={isProcessing}
+        onRetry={onRetry}
       />
       <ChatInput onSend={onSend} disabled={isProcessing} />
     </div>

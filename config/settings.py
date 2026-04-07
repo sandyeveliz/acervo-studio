@@ -129,16 +129,16 @@ def load_settings() -> Settings:
 
     return Settings(
         lmstudio=LMStudioSettings(
-            base_url=os.getenv("LMSTUDIO_BASE_URL", lm.get("base_url", "http://localhost:1234/v1")),
-            model=os.getenv("LMSTUDIO_MODEL", lm.get("model", "qwen2.5-9b-instruct")),
-            api_key=os.getenv("LMSTUDIO_API_KEY", "lm-studio"),
+            base_url=os.getenv("LMSTUDIO_BASE_URL", lm.get("base_url", "http://localhost:11434/v1")),
+            model=os.getenv("LMSTUDIO_MODEL", lm.get("model", "acervo-extractor-v3-Q4_K_M")),
+            api_key=os.getenv("LMSTUDIO_API_KEY", "ollama"),
             context_window=lm.get("context_window", 32_000),
             kv_cache=lm.get("kv_cache", True),
         ),
         lmstudio_utility=LMStudioSettings(
-            base_url=os.getenv("LMSTUDIO_UTILITY_BASE_URL", lmu.get("base_url", lm.get("base_url", "http://localhost:1234/v1"))),
-            model=os.getenv("LMSTUDIO_UTILITY_MODEL", lmu.get("model", "qwen2.5-3b-instruct")),
-            api_key=os.getenv("LMSTUDIO_API_KEY", "lm-studio"),
+            base_url=os.getenv("LMSTUDIO_UTILITY_BASE_URL", lmu.get("base_url", lm.get("base_url", "http://localhost:11434/v1"))),
+            model=os.getenv("LMSTUDIO_UTILITY_MODEL", lmu.get("model", "acervo-extractor-v3-Q4_K_M")),
+            api_key=os.getenv("LMSTUDIO_API_KEY", "ollama"),
             context_window=lmu.get("context_window", 32_000),
             kv_cache=lmu.get("kv_cache", False),
         ),

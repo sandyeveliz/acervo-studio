@@ -11,6 +11,7 @@ interface ChatTurn {
   userMessage: Message;
   steps: PipelineStep[];
   assistantMessage: Message | null;
+  errorMessage: Message | null;
   isActiveTurn: boolean;
 }
 
@@ -20,6 +21,7 @@ interface ChatTimelineProps {
   currentStream: string | null;
   isStreaming: boolean;
   isProcessing: boolean;
+  onRetry?: () => void;
 }
 
 // ── Helpers ──
@@ -38,16 +40,18 @@ function buildTurns(
       const stepGroup = pipelineSteps[turnIndex];
       const nextMsg = messages[i + 1];
       const assistantMessage = nextMsg?.role === "assistant" ? nextMsg : null;
+      const errorMessage = nextMsg?.role === "error" ? nextMsg : null;
       const isLast = turnIndex === pipelineSteps.length - 1;
 
       turns.push({
         userMessage: msg,
         steps: stepGroup?.steps ?? [],
         assistantMessage,
+        errorMessage,
         isActiveTurn: isLast && isProcessing,
       });
       turnIndex++;
-      if (assistantMessage) i++;
+      if (assistantMessage || errorMessage) i++;
     }
   }
   return turns;
@@ -58,6 +62,7 @@ function buildTurns(
 export function ChatTimeline({
   messages,
   pipelineSteps,
+  onRetry,
   currentStream,
   isStreaming,
   isProcessing,
@@ -132,6 +137,10 @@ export function ChatTimeline({
 
             {turn.assistantMessage && (
               <MessageBubble message={turn.assistantMessage} />
+            )}
+
+            {turn.errorMessage && (
+              <MessageBubble message={turn.errorMessage} onRetry={onRetry} />
             )}
           </div>
         ))}

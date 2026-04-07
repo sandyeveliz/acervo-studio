@@ -4,12 +4,14 @@ import { agentsApi, type AgentSummary } from "@/lib/api";
 import { AgentList } from "@/components/agents/AgentList";
 import { AgentEditor } from "@/components/agents/AgentEditor";
 import { useConfirm } from "@/hooks/useConfirm";
+import { usePrompt } from "@/hooks/usePrompt";
 
 export function AgentsPage() {
   const [agents, setAgents] = useState<AgentSummary[]>([]);
   const [selectedName, setSelectedName] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const { confirm, ConfirmDialog } = useConfirm();
+  const { prompt, PromptDialog } = usePrompt();
 
   const loadAgents = useCallback(async () => {
     try {
@@ -26,9 +28,13 @@ export function AgentsPage() {
   }, [loadAgents]);
 
   const handleCreate = async () => {
-    const name = prompt("Agent name:");
-    if (!name?.trim()) return;
-    const slug = name.trim().toLowerCase().replace(/\s+/g, "-");
+    const name = await prompt({
+      title: "New Agent",
+      description: "Enter a name for the new agent.",
+      placeholder: "my-agent",
+    });
+    if (!name) return;
+    const slug = name.toLowerCase().replace(/\s+/g, "-");
     await agentsApi.save(slug, {
       name: slug,
       description: "",
@@ -78,6 +84,7 @@ export function AgentsPage() {
         </div>
       </div>
       {ConfirmDialog}
+      {PromptDialog}
     </>
   );
 }

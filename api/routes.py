@@ -9,7 +9,7 @@ import logging
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from api.serializers import StreamThrottle, serialize_event
-from core.events import PipelineEvent, StreamChunkReceived
+from core.events import PipelineError, PipelineEvent, StreamChunkReceived
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -98,13 +98,12 @@ async def websocket_chat(websocket: WebSocket) -> None:
                         await session.run_turn(user_text)
                     except Exception as exc:
                         logger.exception("Pipeline error")
+                        # Emit via EventBus so trace, telemetry, and frontend all see it
                         try:
-                            await websocket.send_json({
-                                "type": "error",
-                                "step": "pipeline",
-                                "error": str(exc),
-                            })
-                        except (WebSocketDisconnect, RuntimeError):
+                            await session.bus.emit(PipelineError(
+                                step="pipeline", error=str(exc),
+                            ))
+                        except Exception:
                             pass
                     finally:
                         try:

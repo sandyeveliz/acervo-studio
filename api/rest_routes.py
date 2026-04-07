@@ -6,6 +6,7 @@ import asyncio
 import json as json_mod
 import logging
 import re as re_mod
+import sys
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -15,12 +16,12 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from config.agents import AGENTS_DIR, load_agent_config
 from config.settings import load_settings, save_settings, settings_to_dict
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
 
-_AGENTS_DIR = Path(__file__).resolve().parent.parent / "config" / "agents"
 _PROMPTS_DIR = Path(__file__).resolve().parent.parent / "config" / "prompts"
 
 # ── Helpers ──
@@ -136,6 +137,12 @@ class AgentConfig(BaseModel):
     description: str = ""
     system_prompt: str = ""
     temperature: float = 0.7
+
+
+class SkillConfig(BaseModel):
+    name: str
+    description: str = ""
+    content: str = ""
 
 
 class PromptUpdate(BaseModel):
@@ -375,6 +382,9 @@ async def select_project(project_id: str, request: Request):
     session = _get_session(request)
     session.update_project_context(project.name, resp.get("description", ""))
 
+    # Switch telemetry and annotations to project directory
+    session.switch_telemetry_path(project.path)
+
     # Tell the proxy to switch to this project's graph
     await _switch_acervo_proxy_project(session, project.path)
 
@@ -393,12 +403,44 @@ async def update_project_description(project_id: str, body: ProjectDescriptionUp
     if not config_path.exists():
         raise HTTPException(400, "Project not initialized — run 'acervo init' first")
 
-    from acervo.config import AcervoConfig
-    cfg = AcervoConfig.load(config_path)
-    cfg.description = body.description.strip()
-    cfg.save(config_path)
+    # Read, update description, write back using safe TOML writer.
+    # Falls back to regex replacement if the TOML is already corrupted.
+    new_desc = body.description.strip()
+    raw = None
+    try:
+        if sys.version_info >= (3, 11):
+            import tomllib
+            with open(config_path, "rb") as f:
+                raw = tomllib.load(f)
+        else:
+            import tomli
+            with open(config_path, "rb") as f:
+                raw = tomli.load(f)
+    except Exception:
+        pass  # TOML is broken — fall through to regex fix
 
-    return {"saved": True, "description": cfg.description}
+    if raw is not None:
+        raw.setdefault("acervo", {})["description"] = new_desc
+        try:
+            import tomli_w
+            with open(config_path, "wb") as f:
+                tomli_w.dump(raw, f)
+        except ImportError:
+            _write_toml_simple(raw, config_path)
+    else:
+        # Fallback: regex-replace the description line in the broken file
+        text = config_path.read_text(encoding="utf-8")
+        escaped = _toml_escape(new_desc)
+        text = re_mod.sub(
+            r'^description\s*=\s*".*"',
+            f'description = "{escaped}"',
+            text,
+            count=1,
+            flags=re_mod.MULTILINE,
+        )
+        config_path.write_text(text, encoding="utf-8")
+
+    return {"saved": True, "description": body.description.strip()}
 
 
 @router.post("/projects/{project_id}/check-services")
@@ -1045,6 +1087,11 @@ async def update_project_config(project_id: str, body: dict):
     return {"saved": True}
 
 
+def _toml_escape(s: str) -> str:
+    """Escape a string for TOML double-quoted values."""
+    return s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+
 def _write_toml_simple(data: dict, path: Path) -> None:
     """Basic TOML writer for nested dicts. Handles the acervo config structure."""
     lines: list[str] = []
@@ -1056,7 +1103,7 @@ def _write_toml_simple(data: dict, path: Path) -> None:
     lines.append("[acervo]")
     for k in ("workspace", "data_dir", "owner", "description"):
         if k in acervo:
-            lines.append(f'{k} = "{acervo[k]}"')
+            lines.append(f'{k} = "{_toml_escape(str(acervo[k]))}"')
     lines.append("")
 
     # Nested sections
@@ -1065,13 +1112,13 @@ def _write_toml_simple(data: dict, path: Path) -> None:
             lines.append(f"[acervo.{section}]")
             for k, v in acervo[section].items():
                 if isinstance(v, str):
-                    lines.append(f'{k} = "{v}"')
+                    lines.append(f'{k} = "{_toml_escape(v)}"')
                 elif isinstance(v, bool):
                     lines.append(f"{k} = {'true' if v else 'false'}")
                 elif isinstance(v, (int, float)):
                     lines.append(f"{k} = {v}")
                 elif isinstance(v, list):
-                    items = ", ".join(f'"{i}"' for i in v)
+                    items = ", ".join(f'"{_toml_escape(str(i))}"' for i in v)
                     lines.append(f"{k} = [{items}]")
             lines.append("")
 
@@ -1805,6 +1852,267 @@ async def clear_trace(request: Request):
     return {"cleared": True}
 
 
+# ── Telemetry endpoints ──
+
+
+@router.get("/acervo/telemetry")
+async def get_telemetry(request: Request, last: int | None = None):
+    """Return structured telemetry spans for the current session."""
+    session = _get_session(request)
+    if not session.telemetry:
+        return {"spans": [], "session": session.name}
+    spans = session.telemetry.get_spans(last=last)
+    hardware = await session.telemetry.get_hardware_info()
+    return {"spans": spans, "session": session.name, "hardware": hardware}
+
+
+# ── Annotations (training data) ──
+
+
+@router.get("/annotations")
+async def get_annotations(request: Request):
+    """Return all annotations keyed by turn_id."""
+    session = _get_session(request)
+    if not session.annotations:
+        return {"annotations": {}}
+    return {"annotations": session.annotations.get_all()}
+
+
+@router.get("/annotations/{turn_id}")
+async def get_annotation(request: Request, turn_id: int):
+    """Return annotation for a specific turn."""
+    session = _get_session(request)
+    if not session.annotations:
+        raise HTTPException(404, "Annotations not available")
+    ann = session.annotations.get(turn_id)
+    if not ann:
+        raise HTTPException(404, f"No annotation for turn {turn_id}")
+    return ann
+
+
+@router.put("/annotations/{turn_id}")
+async def save_annotation(request: Request, turn_id: int, body: dict[str, Any]):
+    """Save or update annotation for a turn."""
+    session = _get_session(request)
+    if not session.annotations:
+        raise HTTPException(500, "Annotations not available")
+    session.annotations.save(turn_id, body)
+    return {"saved": True, "turn_id": turn_id}
+
+
+@router.delete("/annotations/{turn_id}")
+async def delete_annotation(request: Request, turn_id: int):
+    """Delete annotation for a turn."""
+    session = _get_session(request)
+    if not session.annotations:
+        raise HTTPException(500, "Annotations not available")
+    deleted = session.annotations.delete(turn_id)
+    return {"deleted": deleted, "turn_id": turn_id}
+
+
+@router.get("/annotations/export/batch")
+async def export_annotations(request: Request, format: str = "jsonl"):
+    """Export annotations. format=jsonl (training), json (full dump), md (report)."""
+    session = _get_session(request)
+    if not session.annotations or not session.telemetry:
+        return {"error": "Not available"}
+
+    if format == "jsonl":
+        spans = session.telemetry.get_spans()
+        # Enrich spans with stage_data from trace events
+        if session.trace_store:
+            events = session.trace_store.get_all()
+            for span in spans:
+                turn = span.get("turn_id")
+                for evt in events:
+                    if evt.get("turn") == turn and evt.get("type") == "acervo_enrich_result":
+                        span["stage_data"] = evt.get("stage_data", "")
+                        break
+        examples = session.annotations.export_training_jsonl(spans)
+        return {"format": "jsonl", "count": len(examples), "examples": examples}
+
+    elif format == "json":
+        return {
+            "format": "json",
+            "annotations": session.annotations.get_all(),
+            "spans": session.telemetry.get_spans(),
+        }
+
+    else:
+        # Markdown report
+        annotations = session.annotations.get_all()
+        lines = ["# Annotation Report\n"]
+        for turn_id, ann in sorted(annotations.items()):
+            status = ann.get("status", "pending")
+            obs = ann.get("observations", "")
+            lines.append(f"## Turn {turn_id} [{status}]\n")
+            if obs:
+                lines.append(f"**Observations:** {obs}\n")
+            s1 = ann.get("s1_expected", {})
+            if s1:
+                lines.append(f"**S1 Expected:** {len(s1.get('entities', []))} entities, "
+                             f"{len(s1.get('relations', []))} relations, "
+                             f"{len(s1.get('facts', []))} facts\n")
+            lines.append("")
+        return {"format": "md", "content": "\n".join(lines)}
+
+
+@router.get("/annotations/export/turn/{turn_id}")
+async def export_turn(request: Request, turn_id: int, format: str = "json"):
+    """Export a single turn with span + annotation data. No annotation required."""
+    session = _get_session(request)
+    if not session.telemetry:
+        raise HTTPException(500, "Telemetry not available")
+
+    # Find the span
+    span = None
+    for s in session.telemetry.get_spans():
+        if s.get("turn_id") == turn_id:
+            span = s
+            break
+    if not span:
+        raise HTTPException(404, f"No span for turn {turn_id}")
+
+    # Enrich with stage_data from trace events
+    if session.trace_store:
+        for evt in session.trace_store.get_all():
+            if evt.get("turn") == turn_id and evt.get("type") == "acervo_enrich_result":
+                span["stage_data"] = evt.get("stage_data", "")
+                break
+
+    # Get annotation if exists
+    ann = session.annotations.get(turn_id) if session.annotations else None
+
+    if format == "jsonl" and ann and ann.get("s1_expected"):
+        # Generate training example
+        examples = session.annotations.export_training_jsonl([span], annotated_only=False)
+        return {"format": "jsonl", "count": len(examples), "examples": examples}
+
+    # Default: full turn dump
+    return {"format": "json", "span": span, "annotation": ann}
+
+
+# ── Ollama monitoring ──
+
+
+@router.get("/ollama/status")
+async def get_ollama_status(request: Request):
+    """Live Ollama status: loaded models, GPU/VRAM, system RAM."""
+    import shutil
+    import subprocess
+
+    session = _get_session(request)
+    ollama_url = session.settings.ollama.base_url if session.settings else "http://localhost:11434"
+
+    result: dict[str, Any] = {
+        "ollama": {"running": False, "models_loaded": [], "models_available": []},
+        "gpu": {"vram_used_mb": 0, "vram_total_mb": 0, "gpu_util_pct": 0, "gpu_name": ""},
+        "ram": {"used_mb": 0, "total_mb": 0},
+    }
+
+    # ── Ollama /api/ps (loaded models) ──
+    try:
+        import aiohttp
+        async with aiohttp.ClientSession() as client:
+            async with client.get(f"{ollama_url}/api/ps", timeout=aiohttp.ClientTimeout(total=3)) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    result["ollama"]["running"] = True
+                    for m in data.get("models", []):
+                        result["ollama"]["models_loaded"].append({
+                            "name": m.get("name", ""),
+                            "size_mb": round(m.get("size", 0) / 1024 / 1024),
+                            "vram_mb": round(m.get("size_vram", 0) / 1024 / 1024),
+                            "parameter_size": m.get("details", {}).get("parameter_size", ""),
+                            "quantization": m.get("details", {}).get("quantization_level", ""),
+                            "family": m.get("details", {}).get("family", ""),
+                            "expires_at": m.get("expires_at", ""),
+                        })
+    except Exception:
+        pass
+
+    # ── Ollama /api/tags (available models) ──
+    try:
+        import aiohttp
+        async with aiohttp.ClientSession() as client:
+            async with client.get(f"{ollama_url}/api/tags", timeout=aiohttp.ClientTimeout(total=3)) as resp:
+                if resp.status == 200:
+                    result["ollama"]["running"] = True
+                    data = await resp.json()
+                    for m in data.get("models", []):
+                        result["ollama"]["models_available"].append({
+                            "name": m.get("name", ""),
+                            "size_mb": round(m.get("size", 0) / 1024 / 1024),
+                            "parameter_size": m.get("details", {}).get("parameter_size", ""),
+                            "quantization": m.get("details", {}).get("quantization_level", ""),
+                            "family": m.get("details", {}).get("family", ""),
+                        })
+    except Exception:
+        pass
+
+    # ── nvidia-smi (GPU) ──
+    nvidia_smi = shutil.which("nvidia-smi")
+    if nvidia_smi:
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                nvidia_smi,
+                "--query-gpu=name,memory.used,memory.total,utilization.gpu",
+                "--format=csv,noheader,nounits",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
+            if proc.returncode == 0:
+                parts = stdout.decode().strip().split(", ")
+                if len(parts) >= 4:
+                    result["gpu"]["gpu_name"] = parts[0].strip()
+                    result["gpu"]["vram_used_mb"] = int(parts[1].strip())
+                    result["gpu"]["vram_total_mb"] = int(parts[2].strip())
+                    result["gpu"]["gpu_util_pct"] = int(parts[3].strip())
+        except Exception:
+            pass
+
+    # ── System RAM (cross-platform, no dependencies) ──
+    try:
+        import platform as _platform
+        if _platform.system() == "Windows":
+            proc = await asyncio.create_subprocess_exec(
+                "wmic", "OS", "get",
+                "FreePhysicalMemory,TotalVisibleMemorySize",
+                "/Value",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
+            if proc.returncode == 0:
+                text = stdout.decode()
+                free_kb = total_kb = 0
+                for line in text.strip().splitlines():
+                    line = line.strip()
+                    if line.startswith("FreePhysicalMemory="):
+                        free_kb = int(line.split("=")[1])
+                    elif line.startswith("TotalVisibleMemorySize="):
+                        total_kb = int(line.split("=")[1])
+                result["ram"]["total_mb"] = total_kb // 1024
+                result["ram"]["used_mb"] = (total_kb - free_kb) // 1024
+        else:
+            # Linux/Mac: read /proc/meminfo
+            with open("/proc/meminfo") as f:
+                meminfo = {}
+                for line in f:
+                    parts = line.split(":")
+                    if len(parts) == 2:
+                        meminfo[parts[0].strip()] = int(parts[1].strip().split()[0])
+                total = meminfo.get("MemTotal", 0)
+                available = meminfo.get("MemAvailable", 0)
+                result["ram"]["total_mb"] = total // 1024
+                result["ram"]["used_mb"] = (total - available) // 1024
+    except Exception:
+        pass
+
+    return result
+
+
 # ── Settings endpoints ──
 
 
@@ -1852,25 +2160,50 @@ def _sync_context_to_acervo(ctx_updates: dict) -> None:
 
 
 # ── Agent endpoints ──
+# Per-project agents in .acervo/agents/, with global AGENTS_DIR as fallback for "default".
+
+
+def _agents_dir(request: Request) -> Path:
+    """Return the agents directory for the active project."""
+    session = _get_session(request)
+    if session._history_dir:
+        d = session._history_dir / "agents"
+    else:
+        return AGENTS_DIR
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 
 @router.get("/agents")
-async def list_agents():
+async def list_agents(request: Request):
+    project_dir = _agents_dir(request)
+    seen: set[str] = set()
     agents = []
-    for f in sorted(_AGENTS_DIR.glob("*.yaml")):
+
+    # Project agents first
+    for f in sorted(project_dir.glob("*.yaml")):
         with open(f, "r", encoding="utf-8") as fh:
             data = yaml.safe_load(fh) or {}
-        agents.append({
-            "name": data.get("name", f.stem),
-            "description": data.get("description", ""),
-            "file": f.name,
-        })
+        name = data.get("name", f.stem)
+        seen.add(f.stem)
+        agents.append({"name": name, "description": data.get("description", ""), "file": f.name})
+
+    # Global default agent (always visible if not overridden)
+    for f in sorted(AGENTS_DIR.glob("*.yaml")):
+        if f.stem not in seen:
+            with open(f, "r", encoding="utf-8") as fh:
+                data = yaml.safe_load(fh) or {}
+            agents.append({"name": data.get("name", f.stem), "description": data.get("description", ""), "file": f.name})
+
     return {"agents": agents}
 
 
 @router.get("/agents/{name}")
-async def get_agent(name: str):
-    path = _AGENTS_DIR / f"{name}.yaml"
+async def get_agent(name: str, request: Request):
+    # Check project dir first, fall back to global
+    project_path = _agents_dir(request) / f"{name}.yaml"
+    global_path = AGENTS_DIR / f"{name}.yaml"
+    path = project_path if project_path.exists() else global_path
     if not path.exists():
         raise HTTPException(status_code=404, detail=f"Agent '{name}' not found")
     with open(path, "r", encoding="utf-8") as f:
@@ -1879,8 +2212,9 @@ async def get_agent(name: str):
 
 
 @router.put("/agents/{name}")
-async def save_agent(name: str, config: AgentConfig):
-    path = _AGENTS_DIR / f"{name}.yaml"
+async def save_agent(name: str, config: AgentConfig, request: Request):
+    # Always save to project dir (not global)
+    path = _agents_dir(request) / f"{name}.yaml"
     data = config.model_dump()
     with open(path, "w", encoding="utf-8") as f:
         yaml.dump(data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
@@ -1888,14 +2222,284 @@ async def save_agent(name: str, config: AgentConfig):
 
 
 @router.delete("/agents/{name}")
-async def delete_agent(name: str):
+async def delete_agent(name: str, request: Request):
     if name == "default":
         raise HTTPException(status_code=400, detail="Cannot delete the default agent")
-    path = _AGENTS_DIR / f"{name}.yaml"
+    path = _agents_dir(request) / f"{name}.yaml"
     if not path.exists():
         raise HTTPException(status_code=404, detail=f"Agent '{name}' not found")
     path.unlink()
     return {"deleted": True, "name": name}
+
+
+# ── Skill endpoints ──
+# Skills are stored per-project in .acervo/skills/*.yaml
+
+
+def _skills_dir(request: Request) -> Path:
+    """Return the skills directory for the active project."""
+    session = _get_session(request)
+    if session._history_dir:
+        # _history_dir points to .acervo/ of the active project
+        d = session._history_dir / "skills"
+    else:
+        d = Path("data") / "skills"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+@router.get("/skills")
+async def list_skills(request: Request):
+    d = _skills_dir(request)
+    skills = []
+    for f in sorted(d.glob("*.yaml")):
+        with open(f, "r", encoding="utf-8") as fh:
+            data = yaml.safe_load(fh) or {}
+        skills.append({
+            "name": data.get("name", f.stem),
+            "description": data.get("description", ""),
+            "file": f.name,
+            "source": data.get("source", ""),
+        })
+    return {"skills": skills}
+
+
+@router.get("/skills/{name}")
+async def get_skill(name: str, request: Request):
+    path = _skills_dir(request) / f"{name}.yaml"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=f"Skill '{name}' not found")
+    with open(path, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    return data
+
+
+@router.put("/skills/{name}")
+async def save_skill(name: str, config: SkillConfig, request: Request):
+    path = _skills_dir(request) / f"{name}.yaml"
+    data = config.model_dump()
+    with open(path, "w", encoding="utf-8") as f:
+        yaml.dump(data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+    return {"saved": True, "name": name}
+
+
+@router.delete("/skills/{name}")
+async def delete_skill(name: str, request: Request):
+    path = _skills_dir(request) / f"{name}.yaml"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=f"Skill '{name}' not found")
+    path.unlink()
+    return {"deleted": True, "name": name}
+
+
+# ── Skill install from GitHub ──
+
+
+def _parse_repo_input(raw: str) -> str | None:
+    """Extract 'owner/repo' from various input formats.
+
+    Accepts:
+      - owner/repo
+      - https://github.com/owner/repo
+      - npx skills add owner/repo
+      - npx skills add owner/repo@skill-name
+    """
+    raw = raw.strip()
+    # Strip "npx skills add " prefix
+    if raw.startswith("npx "):
+        parts = raw.split()
+        raw = parts[-1] if len(parts) >= 3 else raw
+    # Strip @skill-name suffix
+    if "@" in raw and not raw.startswith("http"):
+        raw = raw.split("@")[0]
+    # GitHub URL
+    if "github.com/" in raw:
+        raw = raw.split("github.com/")[-1]
+    # Strip trailing .git or slashes
+    raw = raw.rstrip("/").removesuffix(".git")
+    # Validate owner/repo format
+    parts = raw.split("/")
+    if len(parts) >= 2 and all(parts[:2]):
+        return f"{parts[0]}/{parts[1]}"
+    return None
+
+
+class SkillInstallRequest(BaseModel):
+    repo: str  # raw input: owner/repo, URL, or npx command
+    skills: list[str]  # skill names to install
+
+
+@router.post("/skills/browse")
+async def browse_skills_repo(body: dict):
+    """Fetch available skills from a GitHub repo.
+
+    Scans for SKILL.md files in: root, skills/*, and any subdir.
+    Returns list of {name, description, path} for each found skill.
+    """
+    import httpx
+
+    raw = body.get("repo", "")
+    repo = _parse_repo_input(raw)
+    if not repo:
+        raise HTTPException(400, f"Could not parse repo from: {raw}")
+
+    # Use GitHub API to get repo tree (recursive)
+    api_url = f"https://api.github.com/repos/{repo}/git/trees/main?recursive=1"
+    headers = {"Accept": "application/vnd.github.v3+json"}
+    # Try GITHUB_TOKEN for higher rate limits
+    import os
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if token:
+        headers["Authorization"] = f"token {token}"
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        # Try main branch, fall back to master
+        resp = await client.get(api_url, headers=headers)
+        if resp.status_code == 404:
+            api_url = api_url.replace("/main?", "/master?")
+            resp = await client.get(api_url, headers=headers)
+        if resp.status_code != 200:
+            raise HTTPException(resp.status_code, f"GitHub API error: {resp.text[:200]}")
+
+        tree = resp.json().get("tree", [])
+
+        # Find all SKILL.md files
+        skill_paths = [
+            item["path"] for item in tree
+            if item["type"] == "blob" and item["path"].endswith("SKILL.md")
+        ]
+
+        if not skill_paths:
+            return {"repo": repo, "skills": [], "error": "No SKILL.md files found in this repo"}
+
+        # Fetch and parse each SKILL.md
+        available = []
+        for spath in skill_paths:
+            raw_url = f"https://raw.githubusercontent.com/{repo}/main/{spath}"
+            r = await client.get(raw_url)
+            if r.status_code == 404:
+                raw_url = raw_url.replace("/main/", "/master/")
+                r = await client.get(raw_url)
+            if r.status_code != 200:
+                continue
+
+            text = r.text
+            # Parse YAML frontmatter
+            meta = _parse_skill_frontmatter(text)
+            # Derive name from path if not in frontmatter
+            # e.g., "skills/brainstorming/SKILL.md" → "brainstorming"
+            path_parts = spath.replace("\\", "/").split("/")
+            if len(path_parts) >= 2:
+                dir_name = path_parts[-2]
+            else:
+                dir_name = repo.split("/")[-1]
+            name = meta.get("name", dir_name)
+
+            available.append({
+                "name": name,
+                "description": meta.get("description", ""),
+                "path": spath,
+            })
+
+    return {"repo": repo, "skills": available}
+
+
+def _parse_skill_frontmatter(text: str) -> dict:
+    """Parse YAML frontmatter from a SKILL.md file."""
+    text = text.strip()
+    if not text.startswith("---"):
+        return {}
+    try:
+        _, fm, _ = text.split("---", 2)
+        return yaml.safe_load(fm) or {}
+    except (ValueError, yaml.YAMLError):
+        return {}
+
+
+@router.post("/skills/install")
+async def install_skills(body: SkillInstallRequest, request: Request):
+    """Install selected skills from a GitHub repo into the active project."""
+    import httpx
+
+    repo = _parse_repo_input(body.repo)
+    if not repo:
+        raise HTTPException(400, f"Could not parse repo from: {body.repo}")
+
+    skills_dir = _skills_dir(request)
+    installed = []
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        # First get repo tree to find SKILL.md paths
+        api_url = f"https://api.github.com/repos/{repo}/git/trees/main?recursive=1"
+        headers = {"Accept": "application/vnd.github.v3+json"}
+        import os
+        token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+        if token:
+            headers["Authorization"] = f"token {token}"
+
+        resp = await client.get(api_url, headers=headers)
+        if resp.status_code == 404:
+            api_url = api_url.replace("/main?", "/master?")
+            resp = await client.get(api_url, headers=headers)
+        if resp.status_code != 200:
+            raise HTTPException(resp.status_code, f"GitHub API error: {resp.text[:200]}")
+
+        tree = resp.json().get("tree", [])
+        skill_paths = {
+            item["path"]: item for item in tree
+            if item["type"] == "blob" and item["path"].endswith("SKILL.md")
+        }
+
+        for skill_name in body.skills:
+            # Find the SKILL.md for this skill name
+            target_path = None
+            for spath in skill_paths:
+                parts = spath.replace("\\", "/").split("/")
+                dir_name = parts[-2] if len(parts) >= 2 else ""
+                if dir_name == skill_name or spath == "SKILL.md":
+                    target_path = spath
+                    break
+
+            if not target_path:
+                continue
+
+            # Fetch the SKILL.md content
+            raw_url = f"https://raw.githubusercontent.com/{repo}/main/{target_path}"
+            r = await client.get(raw_url)
+            if r.status_code == 404:
+                raw_url = raw_url.replace("/main/", "/master/")
+                r = await client.get(raw_url)
+            if r.status_code != 200:
+                continue
+
+            text = r.text
+            meta = _parse_skill_frontmatter(text)
+            name = meta.get("name", skill_name)
+
+            # Extract body (content after frontmatter)
+            body_content = text.strip()
+            if body_content.startswith("---"):
+                try:
+                    _, _, body_content = body_content.split("---", 2)
+                    body_content = body_content.strip()
+                except ValueError:
+                    pass
+
+            # Save as our YAML format
+            skill_data = {
+                "name": name,
+                "description": meta.get("description", ""),
+                "content": body_content,
+                "source": f"github:{repo}",
+                "source_path": target_path,
+            }
+            out_path = skills_dir / f"{name}.yaml"
+            with open(out_path, "w", encoding="utf-8") as f:
+                yaml.dump(skill_data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+
+            installed.append(name)
+
+    return {"installed": installed, "count": len(installed)}
 
 
 # ── Acervo plugin endpoints ──
@@ -2140,14 +2744,8 @@ async def save_prompt(name: str, body: PromptUpdate):
 # ── System prompt endpoints ──
 
 
-def _load_agent_config(name: str = "default") -> dict:
-    path = _AGENTS_DIR / f"{name}.yaml"
-    with open(path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
-
-
 def _save_agent_system_prompt(prompt: str) -> None:
-    path = _AGENTS_DIR / "default.yaml"
+    path = AGENTS_DIR / "default.yaml"
     config = yaml.safe_load(path.read_text(encoding="utf-8"))
     config["system_prompt"] = prompt
     with open(path, "w", encoding="utf-8") as f:
@@ -2158,7 +2756,7 @@ def _save_agent_system_prompt(prompt: str) -> None:
 async def get_system_prompt(request: Request):
     """Get the current system prompt and the default for reset."""
     session = _get_session(request)
-    agent_config = _load_agent_config()
+    agent_config = load_agent_config()
     return {
         "prompt": session.system_prompt,
         "default": agent_config["system_prompt"].strip(),

@@ -6,6 +6,7 @@ On turn completion, flushes one JSON line with the full turn summary.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import datetime
@@ -41,6 +42,7 @@ class TurnLogger:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._turn_count = self._count_existing_turns()
         self._current: dict[str, Any] = {}
+        self._flush_timer: asyncio.TimerHandle | None = None
 
     def subscribe(self, bus: EventBus) -> None:
         """Subscribe to all pipeline events on the given bus."""
@@ -116,6 +118,8 @@ class TurnLogger:
             llm["ttft_ms"] = round(event.ttft_ms, 1)
             llm["speed_tps"] = round(event.speed_tps, 1)
             self._current["assistant_response"] = event.clean_text
+            # When proxy handles extraction, GraphUpdated never fires — schedule flush
+            self._schedule_flush()
 
         elif isinstance(event, ExtractionCompleted):
             self._current["extraction"] = {
@@ -128,6 +132,7 @@ class TurnLogger:
             facts.append({"entity": event.entity, "fact": event.fact, "reason": event.reason})
 
         elif isinstance(event, GraphUpdated):
+            self._cancel_scheduled_flush()
             self._current["graph_after"] = {
                 "node_count": event.node_count,
                 "edge_count": event.edge_count,
@@ -140,6 +145,20 @@ class TurnLogger:
                 "step": event.step,
                 "error": event.error,
             })
+
+    def _schedule_flush(self) -> None:
+        """Schedule a flush after 2s — gives GraphUpdated time to arrive."""
+        self._cancel_scheduled_flush()
+        try:
+            loop = asyncio.get_running_loop()
+            self._flush_timer = loop.call_later(2.0, self._flush)
+        except RuntimeError:
+            self._flush()
+
+    def _cancel_scheduled_flush(self) -> None:
+        if self._flush_timer is not None:
+            self._flush_timer.cancel()
+            self._flush_timer = None
 
     def _flush(self) -> None:
         """Write the current turn as one JSONL line."""
