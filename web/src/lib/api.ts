@@ -580,6 +580,58 @@ export const agentsApi = {
     }),
 };
 
+// ── Skills ──
+
+export interface SkillSummary {
+  name: string;
+  description: string;
+  file: string;
+  source?: string;
+}
+
+export interface SkillConfig {
+  name: string;
+  description: string;
+  content: string;
+  source?: string;
+  source_path?: string;
+}
+
+export interface BrowseSkill {
+  name: string;
+  description: string;
+  path: string;
+}
+
+export const skillsApi = {
+  list: () => request<{ skills: SkillSummary[] }>("/skills"),
+
+  get: (name: string) => request<SkillConfig>(`/skills/${name}`),
+
+  save: (name: string, config: SkillConfig) =>
+    request<{ saved: boolean; name: string }>(`/skills/${name}`, {
+      method: "PUT",
+      body: JSON.stringify(config),
+    }),
+
+  delete: (name: string) =>
+    request<{ deleted: boolean; name: string }>(`/skills/${name}`, {
+      method: "DELETE",
+    }),
+
+  browse: (repo: string) =>
+    request<{ repo: string; skills: BrowseSkill[]; error?: string }>("/skills/browse", {
+      method: "POST",
+      body: JSON.stringify({ repo }),
+    }),
+
+  install: (repo: string, skills: string[]) =>
+    request<{ installed: string[]; count: number }>("/skills/install", {
+      method: "POST",
+      body: JSON.stringify({ repo, skills }),
+    }),
+};
+
 // ── Trace ──
 
 export interface TraceEvent {

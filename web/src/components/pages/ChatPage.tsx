@@ -15,6 +15,7 @@ interface ChatPageProps {
   connected: boolean;
   onSend: (text: string) => void;
   onReset: () => void;
+  onRetry?: () => void;
 }
 
 export function ChatPage({
@@ -27,6 +28,7 @@ export function ChatPage({
   connected,
   onSend,
   onReset,
+  onRetry,
 }: ChatPageProps) {
   const [copied, setCopied] = useState(false);
   const hasMessages = messages.length > 0;
@@ -78,6 +80,7 @@ export function ChatPage({
             isProcessing={isProcessing}
             pipelineSteps={pipelineSteps}
             onSend={onSend}
+            onRetry={onRetry}
           />
         </div>
       </div>

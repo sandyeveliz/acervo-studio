@@ -55,6 +55,7 @@ type Action =
   | { type: "user_message"; text: string }
   | { type: "ws_event"; event: WsEvent }
   | { type: "trace_restore"; events: TraceEvent[] }
+  | { type: "set_messages"; messages: Message[] }
   | { type: "reset" };
 
 let _nextId = 0;
@@ -128,6 +129,22 @@ function reducer(state: ChatState, action: Action): ChatState {
               last_speed_tps: e.speed_tps,
               last_completion_tokens: e.completion_tokens,
             },
+          };
+        }
+
+        case "pipeline_error": {
+          const pe = evt as unknown as { step: string; error: string };
+          const errorMsg: Message = {
+            id: nextId(),
+            role: "error",
+            content: pe.error,
+            timestamp: evt.timestamp ?? new Date().toISOString(),
+          };
+          return {
+            ...state,
+            isStreaming: false,
+            currentStream: null,
+            messages: [...state.messages, errorMsg],
           };
         }
 
@@ -248,14 +265,19 @@ function reducer(state: ChatState, action: Action): ChatState {
 
         // Map turn number (1-based) to group index (0-based)
         const groupIdx = (evt.turn || 1) - 1;
-        if (groupIdx >= 0 && groupIdx < groups.length) {
-          const group = { ...groups[groupIdx] };
-          group.steps = [...group.steps, step];
-          groups[groupIdx] = group;
+        // Create missing groups if trace has more turns than history
+        while (groupIdx >= groups.length) {
+          groups.push({ turnId: `turn_restored_${groups.length}`, steps: [] });
         }
+        const group = { ...groups[groupIdx] };
+        group.steps = [...group.steps, step];
+        groups[groupIdx] = group;
       }
       return { ...state, pipelineSteps: groups };
     }
+
+    case "set_messages":
+      return { ...state, messages: action.messages };
 
     case "reset":
       return { ...INITIAL_STATE, connected: state.connected };
@@ -402,10 +424,28 @@ export function useWebSocket() {
     wsRef.current.send(JSON.stringify({ type: "get_stats" }));
   }, []);
 
+  const retryLast = useCallback(() => {
+    // Find the last user message before the error
+    const msgs = state.messages;
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      if (msgs[i].role === "user") {
+        // Remove the error message(s) after it
+        const cleaned = msgs.slice(0, i + 1);
+        dispatch({ type: "set_messages", messages: cleaned });
+        // Re-send the user message
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify({ type: "message", text: msgs[i].content }));
+        }
+        return;
+      }
+    }
+  }, [state.messages]);
+
   return {
     ...state,
     sendMessage,
     resetSession,
     requestStats,
+    retryLast,
   };
 }

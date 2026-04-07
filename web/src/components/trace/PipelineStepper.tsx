@@ -150,8 +150,9 @@ function s1Narrative(data: S1Data): { summary: string; context: string } {
 }
 
 function s2Narrative(data: S2Data): { summary: string; context: string } {
-  const nodeCount = data.nodes.length;
-  const chunkCount = data.chunks_selected || data.chunks_total;
+  const nodes = data.nodes ?? [];
+  const nodeCount = nodes.length;
+  const chunkCount = data.chunks_selected || data.chunks_total || 0;
 
   if (nodeCount === 0) {
     return {
@@ -160,12 +161,13 @@ function s2Narrative(data: S2Data): { summary: string; context: string } {
     };
   }
 
-  const nodeNames = data.nodes.map((n) => n.label).join(", ");
+  const nodeNames = nodes.map((n: { label: string }) => n.label).join(", ");
   const summary = `Searched knowledge base — found ${nodeCount} node${nodeCount !== 1 ? "s" : ""}, ${chunkCount} chunk${chunkCount !== 1 ? "s" : ""}`;
 
   // Determine verification status
-  const hasVerified = data.chunks.some((c) => c.source.startsWith("verified"));
-  const hasConversation = data.chunks.some((c) => !c.source.startsWith("verified"));
+  const chunks = data.chunks ?? [];
+  const hasVerified = chunks.some((c: { source: string }) => c.source.startsWith("verified"));
+  const hasConversation = chunks.some((c: { source: string }) => !c.source.startsWith("verified"));
   let context: string;
   if (hasVerified && hasConversation) {
     context = `Nodes: ${nodeNames} (mixed verified + conversation)`;

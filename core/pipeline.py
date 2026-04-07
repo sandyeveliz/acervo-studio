@@ -6,7 +6,9 @@ Context enrichment is handled transparently by the Acervo proxy when enabled.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import time
 
 from core.event_bus import EventBus
@@ -23,10 +25,13 @@ from core.events import (
     ToolCallCompleted,
     ToolCallRequested,
 )
+from core.tools.file_ops import FileTools
 from utils.token_counter import count_tokens
 from utils.text import strip_think_blocks
 from providers.base import ChatMessage
 from providers.model_router import ModelRouter
+
+log = logging.getLogger(__name__)
 
 
 class ConversationPipeline:
@@ -43,17 +48,21 @@ class ConversationPipeline:
         model_name: str = "",
         mcp=None,
         base_url_override: str | None = None,
+        file_tools: FileTools | None = None,
     ) -> None:
         self._bus = bus
         self._router = router
         self._model_name = model_name
         self._mcp = mcp
         self._base_url_override = base_url_override
+        self._file_tools = file_tools
 
-        # Build unified tool definitions (MCP tools only)
+        # Build unified tool definitions (MCP + file tools)
         all_tools: list[dict] = []
         if mcp:
             all_tools.extend(mcp.get_tool_definitions())
+        if file_tools:
+            all_tools.extend(file_tools.tool_definitions)
         self._tool_defs = all_tools if all_tools else None
 
     async def run_turn(
@@ -130,6 +139,7 @@ class ConversationPipeline:
     # ── Tool-use loop ──
 
     _MAX_TOOL_ROUNDS = 5
+    _TOOL_CALL_TIMEOUT = 60  # seconds per non-streaming tool round
 
     async def _tool_loop(
         self, messages: list[ChatMessage], temperature: float,
@@ -147,10 +157,17 @@ class ConversationPipeline:
         messages = list(messages)  # shallow copy
 
         for round_idx in range(self._MAX_TOOL_ROUNDS):
-            response = await self._router.chat(
-                messages, temperature=temperature, tools=self._tool_defs,
-                base_url_override=self._base_url_override,
-            )
+            try:
+                response = await asyncio.wait_for(
+                    self._router.chat(
+                        messages, temperature=temperature, tools=self._tool_defs,
+                        base_url_override=self._base_url_override,
+                    ),
+                    timeout=self._TOOL_CALL_TIMEOUT,
+                )
+            except (asyncio.TimeoutError, Exception) as e:
+                log.warning("Tool loop round %d failed (%s), falling back to stream", round_idx, e)
+                return messages
 
             if not response.tool_calls:
                 # LLM chose not to use tools — done, proceed to streaming
@@ -177,8 +194,13 @@ class ConversationPipeline:
                     arguments=json.dumps(fn_args, ensure_ascii=False),
                 ))
 
-                # Route to the right executor (MCP tools only)
-                if self._mcp:
+                # Route to the right executor
+                if self._file_tools and fn_name in self._file_tools.available_tools:
+                    result = self._file_tools.execute(fn_name, fn_args)
+                    # After a successful write, index the document via Acervo proxy
+                    if fn_name == "write_file" and '"error"' not in result:
+                        await self._index_document(fn_args.get("path", ""), fn_args.get("content", ""))
+                elif self._mcp:
                     mcp_result = await self._mcp.call_tool_by_name(fn_name, fn_args)
                     result = mcp_result.content
                 else:
@@ -197,6 +219,30 @@ class ConversationPipeline:
                 ))
 
         return messages
+
+    # ── Document indexing ──
+
+    async def _index_document(self, path: str, content: str) -> None:
+        """Index a written document via the Acervo proxy's /acervo/documents endpoint."""
+        if not self._base_url_override or not content:
+            return
+        proxy_base = self._base_url_override.rstrip("/").removesuffix("/v1")
+        url = f"{proxy_base}/acervo/documents"
+        try:
+            import aiohttp
+            filename = path if path.endswith(".md") else f"{path}.md"
+            form = aiohttp.FormData()
+            form.add_field("file", content.encode("utf-8"), filename=filename, content_type="text/markdown")
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, data=form, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        log.info("Document indexed: %s → %s", path, data)
+                    else:
+                        body = await resp.text()
+                        log.warning("Document indexing failed (%d): %s", resp.status, body[:200])
+        except Exception as e:
+            log.warning("Document indexing skipped: %s", e)
 
     # ── LLM streaming ──
 

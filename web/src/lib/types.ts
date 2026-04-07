@@ -151,7 +151,7 @@ export interface StatsEvent extends WsEvent {
 
 export interface Message {
   id: string;
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "error";
   content: string;
   timestamp: string;
 }

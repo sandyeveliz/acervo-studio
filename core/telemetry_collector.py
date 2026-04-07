@@ -174,6 +174,19 @@ class TelemetryCollector:
                         s1_ms = debug.get("s1_latency_ms")
                         if s1_ms:
                             self._current["s1"]["latency_ms"] = s1_ms
+                        # Override S3 data from proxy (proxy injects warm, Studio doesn't see it)
+                        s3_ctx = debug.get("s3_context", {})
+                        if s3_ctx:
+                            s3 = self._current["s3"]
+                            if s3_ctx.get("warm_tokens", 0) > s3["warm_tokens"]:
+                                s3["warm_tokens"] = s3_ctx["warm_tokens"]
+                                s3["total_tokens"] = s3_ctx.get("total_tokens", s3["total_tokens"])
+                                s3["ok"] = s3_ctx.get("has_context", s3["ok"])
+                        # Override S2 data from proxy
+                        s2_gath = debug.get("s2_gathered", {})
+                        if s2_gath:
+                            s2 = self._current["s2"]
+                            s2["nodes_activated"] = s2_gath.get("nodes_total", s2["nodes_activated"])
                         # Store stage_data reference for later retrieval
                         self._current["_stage_data"] = event.stage_data
                     except (json.JSONDecodeError, TypeError):

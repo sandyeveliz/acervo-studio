@@ -1,20 +1,21 @@
-import { MessageSquare, Network, Bot, Settings, BarChart3, FolderOpen, Sun, Moon, Cpu } from "lucide-react";
+import { MessageSquare, Network, Bot, Settings, BarChart3, FolderOpen, Sun, Moon, Cpu, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ProjectSelector } from "./ProjectSelector";
 
-export type Page = "chat" | "graph" | "telemetry" | "ollama" | "agents" | "projects" | "settings";
+export type Page = "chat" | "graph" | "telemetry" | "ollama" | "agents" | "skills" | "projects" | "settings";
 
 type NavItem = { page: Page; icon: typeof MessageSquare; label: string };
 
 const MAIN_NAV: NavItem[] = [
   { page: "chat", icon: MessageSquare, label: "Chat" },
-  { page: "graph", icon: Network, label: "Graph" },
-  { page: "agents", icon: Bot, label: "Agents" },
   { page: "projects", icon: FolderOpen, label: "Projects" },
+  { page: "agents", icon: Bot, label: "Agents" },
+  { page: "skills", icon: Sparkles, label: "Skills" },
   { page: "settings", icon: Settings, label: "Settings" },
 ];
 
 const ACERVO_NAV: NavItem[] = [
+  { page: "graph", icon: Network, label: "Graph" },
   { page: "telemetry", icon: BarChart3, label: "Metrics" },
   { page: "ollama", icon: Cpu, label: "Ollama" },
 ];

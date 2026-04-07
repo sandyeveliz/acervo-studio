@@ -4,31 +4,24 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
-import yaml
+log = logging.getLogger(__name__)
 
-from config.prompt_loader import load_all_prompts
+from config.agents import load_agent_config
 from config.settings import load_settings, Settings
 from api.trace_store import TraceStore
 from core.event_bus import EventBus
 from core.pipeline import ConversationPipeline
+from core.tools.file_ops import FileTools
 from core.annotation_store import AnnotationStore
 from core.telemetry_collector import TelemetryCollector
 from core.turn_logger import TurnLogger
 from providers.base import ChatMessage
 from providers.model_router import ModelRouter
 from providers.mcp_client import MCPManager
-
-_AGENTS_DIR = Path(__file__).resolve().parent.parent / "config" / "agents"
-
-
-def _load_agent_config(name: str = "default") -> dict:
-    path = _AGENTS_DIR / f"{name}.yaml"
-    with open(path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
-
 
 class SessionManager:
     """Single named session with conversation history and LLM pipeline."""
@@ -54,9 +47,12 @@ class SessionManager:
         self._base_system_prompt: str = system_prompt  # agent personality only
         self.temperature: float = 0.7
         self._persist_path = str(persist_path)
+        self._history_dir: Path | None = None  # overridden per-project
         self._running = False
         self._lock = asyncio.Lock()
         self._turn_count = 0
+        self._proxy_url: str | None = None  # set when acervo plugin enabled
+        self._proxy_available: bool = False
 
     async def init(self, shared_router: ModelRouter | None = None) -> None:
         """Initialize all pipeline components.
@@ -77,7 +73,7 @@ class SessionManager:
 
         # If no system prompt provided, load from default agent
         if not self.system_prompt:
-            agent_config = _load_agent_config()
+            agent_config = load_agent_config()
             self.system_prompt = agent_config["system_prompt"].strip()
             self._base_system_prompt = self.system_prompt
             self.temperature = agent_config.get("temperature", 0.7)
@@ -87,9 +83,15 @@ class SessionManager:
 
         # Determine LLM base URL: use proxy when Acervo plugin is enabled
         if self.settings.plugins.acervo.enabled:
-            main_base_url = self.settings.plugins.acervo.proxy_url
+            self._proxy_url = self.settings.plugins.acervo.proxy_url
+            self._proxy_available = await self._check_proxy()
+            main_base_url = self._proxy_url if self._proxy_available else None
         else:
             main_base_url = None  # use default from settings
+
+        # File tools for document note creation (workspace: project's notes dir)
+        notes_dir = Path(self._persist_path).parent / "notes"
+        file_tools = FileTools(notes_dir)
 
         self.pipeline = ConversationPipeline(
             bus=self.bus,
@@ -97,6 +99,7 @@ class SessionManager:
             model_name=self.settings.lmstudio.model,
             mcp=self.mcp if self.mcp.has_servers else None,
             base_url_override=main_base_url,
+            file_tools=file_tools,
         )
 
         # Turn audit logger
@@ -135,11 +138,41 @@ class SessionManager:
         if self.mcp and self.mcp.has_servers:
             await self.mcp.probe_servers()
 
+    async def _check_proxy(self) -> bool:
+        """Quick health check against the Acervo proxy. Returns True if reachable."""
+        if not self._proxy_url:
+            return False
+        base = self._proxy_url.rstrip("/").removesuffix("/v1")
+        url = f"{base}/acervo/status"
+        try:
+            from urllib.request import urlopen
+            loop = asyncio.get_event_loop()
+            await asyncio.wait_for(
+                loop.run_in_executor(None, lambda: urlopen(url, timeout=2).read()),
+                timeout=3,
+            )
+            log.info("Acervo proxy reachable at %s", base)
+            return True
+        except Exception as e:
+            log.warning("Acervo proxy unavailable at %s: %s", base, e)
+            return False
+
     async def run_turn(self, user_text: str) -> str | None:
         """Execute a pipeline turn. Returns assistant response text."""
         async with self._lock:
             self._running = True
             try:
+                # Re-check proxy if it was down — it may have come up since init
+                if self._proxy_url and not self._proxy_available:
+                    self._proxy_available = await self._check_proxy()
+                    if self._proxy_available:
+                        self.pipeline._base_url_override = self._proxy_url
+                if self._proxy_url and not self._proxy_available:
+                    raise ConnectionError(
+                        f"Acervo proxy not reachable at {self._proxy_url}. "
+                        "Start it with 'acervo up' or disable the plugin in Settings."
+                    )
+
                 self.history.append(ChatMessage(role="user", content=user_text))
                 response = await self.pipeline.run_turn(
                     user_text, self.history, self.temperature,
@@ -181,8 +214,9 @@ class SessionManager:
     # ── History persistence ──
 
     def _history_path(self) -> Path:
-        log_dir = Path(self._persist_path).parent
-        return log_dir / "history.json"
+        if self._history_dir:
+            return self._history_dir / "history.json"
+        return Path(self._persist_path).parent / "history.json"
 
     def _save_history(self) -> None:
         """Persist conversation history to disk (excludes system prompt)."""
@@ -245,18 +279,35 @@ class SessionManager:
                 for name in self.mcp.server_names
             ] if self.mcp else [],
             "acervo_enabled": self.settings.plugins.acervo.enabled if self.settings else False,
+            "acervo_proxy_available": self._proxy_available,
         }
         return stats
 
     def switch_telemetry_path(self, project_path: str) -> None:
-        """Switch telemetry and annotation storage to a project's .acervo/ dir.
+        """Switch telemetry, annotations, and history to a project's .acervo/ dir.
 
-        Called when the active project changes so that telemetry data
-        is stored per-project and survives project switching.
+        Called when the active project changes so that per-project data
+        is stored separately and survives project switching.
         If the project has no .acervo/, data stays in memory only (no persistence).
         """
         acervo_dir = Path(project_path) / ".acervo"
         has_acervo = acervo_dir.exists()
+
+        # ── History: save current, switch dir, load new ──
+        self._save_history()  # persist current project's history before switching
+        self._history_dir = acervo_dir if has_acervo else None
+        loaded = self._load_history()
+        if loaded:
+            self.history = loaded
+        else:
+            self.history = [ChatMessage(role="system", content=self.system_prompt)]
+        self._turn_count = sum(1 for m in self.history if m.role == "user")
+
+        # ── File tools: update workspace to project notes dir ──
+        if has_acervo and self.pipeline and self.pipeline._file_tools:
+            notes_dir = acervo_dir / "notes"
+            notes_dir.mkdir(parents=True, exist_ok=True)
+            self.pipeline._file_tools._root = notes_dir.resolve()
 
         tel_path = (acervo_dir / "telemetry.jsonl") if has_acervo else None
         ann_path = (acervo_dir / "annotations.jsonl") if has_acervo else None
@@ -277,9 +328,13 @@ class SessionManager:
             if ann_path:
                 self.annotations._load()
 
-        # Also clear trace store (events belong to previous project)
+        # Switch trace store to project directory and reload
+        trace_path = (acervo_dir / "trace.jsonl") if has_acervo else None
         if self.trace_store:
             self.trace_store.clear()
+            self.trace_store._persist_path = trace_path
+            if trace_path and trace_path.exists():
+                self.trace_store._load_from_disk()
 
     async def cleanup(self) -> None:
         """Shutdown: close providers."""

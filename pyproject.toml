@@ -1,6 +1,6 @@
 [project]
 name = "acervo-studio"
-version = "0.4.0"
+version = "0.5.0"
 requires-python = ">=3.11"
 dependencies = [
     "openai>=1.50.0",
@@ -27,7 +27,7 @@ dependencies = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["config*", "core*", "providers*", "rag*", "skills*", "protocols*", "api*"]
+include = ["config*", "core*", "providers*", "api*", "db*", "plugins*", "utils*"]
 
 [tool.setuptools]
 py-modules = []
