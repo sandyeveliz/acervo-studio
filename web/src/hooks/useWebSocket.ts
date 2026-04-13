@@ -369,6 +369,10 @@ export function useWebSocket() {
       try {
         const event = JSON.parse(e.data) as WsEvent;
         dispatch({ type: "ws_event", event });
+        // Notify graph page of knowledge changes
+        if (event.type === "conversation_indexed") {
+          window.dispatchEvent(new CustomEvent("acervo:graph-updated"));
+        }
         // After history_sync restores messages, fetch stored trace events
         if (event.type === "history_sync") {
           fetch("http://localhost:8000/api/trace")

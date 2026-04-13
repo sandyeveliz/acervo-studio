@@ -21,7 +21,7 @@ import type { QualityIssue } from "@/lib/api";
 interface QualityIssuesPanelProps {
   issues: QualityIssue[];
   onSelectNode: (nodeId: string) => void;
-  onMerge: (keepId: string, absorbId: string, alias: string | null) => void;
+  onMerge: (sourceId: string, targetId: string) => void;
   onDeleteNode: (nodeId: string) => void;
 }
 
@@ -156,7 +156,7 @@ function IssueRow({
 }: {
   issue: QualityIssue;
   onSelectNode: (id: string) => void;
-  onMerge: (keepId: string, absorbId: string, alias: string | null) => void;
+  onMerge: (sourceId: string, targetId: string) => void;
   onDeleteNode: (id: string) => void;
   onIgnore: () => void;
 }) {
@@ -182,7 +182,7 @@ function IssueRow({
             size="sm"
             className="h-6 text-[11px] px-2"
             onClick={() =>
-              onMerge(issue.node_ids[0], issue.node_ids[1], null)
+              onMerge(issue.node_ids[0], issue.node_ids[1])
             }
           >
             <Merge size={10} className="mr-1" />

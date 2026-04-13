@@ -16,35 +16,106 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 
 // ── Graph ──
 
+/** v0.6.1 source/status/confidence enums shared by nodes, edges, facts. */
+export type GraphSource = "llm" | "user" | "system";
+export type GraphStatus = "confirmed" | "pending_review";
+
+export interface GraphFact {
+  fact: string;
+  date?: string;
+  session?: string;
+  source?: GraphSource;
+  // v0.6.1 fields
+  id?: string;
+  confidence?: number;
+  valid_at?: string;
+  invalid_at?: string;
+  expired_at?: string;
+  reference_time?: string;
+  dedup_status?: "flagged" | "duplicate" | null;
+}
+
 export interface GraphNode {
   id: string;
   label: string;
   type: string;
-  facts: { fact: string; date?: string; session?: string; source?: string }[];
+  description?: string;
+  facts: GraphFact[];
   attributes: Record<string, unknown>;
-  status: string;
+  // v0.6.1: status is now a typed enum (was free-form string)
+  status?: GraphStatus | null;
   layer?: string;
   owner?: string;
   confidence_for_owner?: number;
   created_at?: string;
   last_active?: string;
   session_count?: number;
+  // v0.6.1 provenance fields
+  confidence?: number;
+  source?: GraphSource;
+  updated_by?: GraphSource | null;
+  updated_at?: string;
 }
 
 export interface GraphEdge {
-  source: string;
-  target: string;
+  id: string;              // Present in LadybugDB backend; synthesized for old backend
+  source: string;          // source NODE ID (predates v0.6.1 — naming collision with provenance)
+  target: string;          // target NODE ID
   relation: string;
   weight: number;
   created_at?: string;
   layer?: string;
-  source_type?: string;
+  // v0.6.1 provenance fields. The backend's "source" enum lives here as `source_type`
+  // to avoid collision with the source-node-id field above. graphApi.getEdges() normalizes
+  // the wire response into this shape.
+  source_type?: GraphSource;
+  confidence?: number;
+  updated_by?: GraphSource | null;
+  updated_at?: string;
+  status?: GraphStatus | null;
 }
 
+/** Normalized stats shape used by all UI components. */
 export interface GraphStats {
-  node_count: number;
-  edge_count: number;
-  type_distribution: Record<string, number>;
+  total_nodes: number;
+  total_edges: number;
+  types_distribution: Record<string, number>;
+  relations_distribution: Record<string, number>;
+  orphan_count: number;
+}
+
+/** Raw shape returned by the current /graph/stats endpoint. */
+interface RawGraphStats {
+  node_count?: number;
+  edge_count?: number;
+  type_distribution?: Record<string, number>;
+  // New fields (LadybugDB)
+  total_nodes?: number;
+  total_edges?: number;
+  types_distribution?: Record<string, number>;
+  relations_distribution?: Record<string, number>;
+  orphan_count?: number;
+}
+
+function normalizeStats(raw: RawGraphStats): GraphStats {
+  return {
+    total_nodes: raw.total_nodes ?? raw.node_count ?? 0,
+    total_edges: raw.total_edges ?? raw.edge_count ?? 0,
+    types_distribution: raw.types_distribution ?? raw.type_distribution ?? {},
+    relations_distribution: raw.relations_distribution ?? {},
+    orphan_count: raw.orphan_count ?? 0,
+  };
+}
+
+export interface ValidationLogEntry {
+  id: string;
+  timestamp: string;
+  original_type: string;
+  mapped_type: string;
+  context: string;
+  action?: "approved" | "corrected" | "discarded";
+  corrected_type?: string;
+  corrected_relation?: string;
 }
 
 export interface QualityIssue {
@@ -88,18 +159,32 @@ export interface GraphAnalysis {
   system_prompt_preview: string;
 }
 
+// Existing endpoints use /graph/* (current backend).
+// New endpoints use /acervo/graph/* (LadybugDB backend, landing soon).
+// When the backend migration is complete, find-replace /graph/ → /acervo/graph/.
+
 export const graphApi = {
+  // ── Existing endpoints (/graph/*) ──
+
   getNodes: (type?: string) =>
     request<{ nodes: GraphNode[] }>(`/graph/nodes${type ? `?type=${type}` : ""}`),
 
   getNode: (id: string) =>
     request<GraphNode>(`/graph/nodes/${id}`),
 
-  getEdges: (nodeId?: string) =>
-    request<{ edges: GraphEdge[] }>(`/graph/edges${nodeId ? `?node_id=${nodeId}` : ""}`),
+  getEdges: async (nodeId?: string): Promise<{ edges: GraphEdge[] }> => {
+    const res = await request<{ edges: GraphEdge[] }>(`/graph/edges${nodeId ? `?node_id=${nodeId}` : ""}`);
+    // Synthesize id for old backend that doesn't return one
+    for (const e of res.edges) {
+      if (!e.id) e.id = `${e.source}-${e.target}-${e.relation}`;
+    }
+    return res;
+  },
 
-  getStats: () =>
-    request<GraphStats>("/graph/stats"),
+  getStats: async (): Promise<GraphStats> => {
+    const raw = await request<RawGraphStats>("/graph/stats");
+    return normalizeStats(raw);
+  },
 
   exportGraph: () =>
     request<{ nodes: GraphNode[]; edges: GraphEdge[] }>("/graph/export"),
@@ -114,10 +199,10 @@ export const graphApi = {
       method: "DELETE",
     }),
 
-  mergeNodes: (keepId: string, absorbId: string, alias?: string) =>
+  mergeNodes: (sourceId: string, targetId: string) =>
     request<{ merged: boolean }>("/graph/merge", {
       method: "POST",
-      body: JSON.stringify({ keep_id: keepId, absorb_id: absorbId, alias }),
+      body: JSON.stringify({ keep_id: sourceId, absorb_id: targetId }),
     }),
 
   importGraph: (data: { nodes: GraphNode[]; edges: GraphEdge[] }) =>
@@ -129,29 +214,119 @@ export const graphApi = {
   getAnalysis: () =>
     request<GraphAnalysis>("/graph/analysis"),
 
-  createNode: (data: { label: string; type: string; kind?: string; layer?: string; facts?: { fact: string; source?: string }[] }) =>
+  createNode: (data: { label: string; type: string; description?: string; layer?: string; facts?: { fact: string; source?: string }[] }) =>
     request<GraphNode>("/graph/nodes", {
       method: "POST",
       body: JSON.stringify(data),
     }),
 
-  updateNode: (nodeId: string, data: { label?: string; type?: string; attributes?: Record<string, unknown> }) =>
+  updateNode: (nodeId: string, data: { label?: string; type?: string; description?: string; layer?: string; attributes?: Record<string, unknown> }) =>
     request<GraphNode>(`/graph/nodes/${nodeId}`, {
       method: "PATCH",
       body: JSON.stringify(data),
     }),
 
   createEdge: (data: { source: string; target: string; relation: string; weight?: number }) =>
-    request<{ created: boolean; source: string; target: string; relation: string }>("/graph/edges", {
+    request<GraphEdge>("/graph/edges", {
       method: "POST",
       body: JSON.stringify(data),
     }),
 
-  deleteEdge: (data: { source: string; target: string; relation: string }) =>
-    request<{ deleted: boolean }>("/graph/edges", {
-      method: "DELETE",
+  // ── New endpoints (/acervo/graph/*) — will 404 until backend migrates ──
+
+  updateEdge: (edgeId: string, data: { relation?: string }) =>
+    request<GraphEdge>(`/acervo/graph/edges/${edgeId}`, {
+      method: "PATCH",
       body: JSON.stringify(data),
     }),
+
+  // v0.6.1: confirm a pending_review node — sets status=confirmed, confidence=1.0.
+  // Backend stamps updated_by="user" and updated_at automatically based on the request.
+  confirmNode: (nodeId: string) =>
+    request<GraphNode>(`/acervo/graph/nodes/${nodeId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ status: "confirmed", confidence: 1.0 }),
+    }),
+
+  confirmEdge: (edgeId: string) =>
+    request<GraphEdge>(`/acervo/graph/edges/${edgeId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ status: "confirmed", confidence: 1.0 }),
+    }),
+
+  // v0.6.1: dedup pass over fact embeddings. Empty body = check all nodes.
+  deduplicateFacts: (body: { node_ids?: string[] } = {}) =>
+    request<{ checked: number; removed: number; flagged: number }>(
+      "/acervo/graph/deduplicate-facts",
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      },
+    ),
+
+  // v0.6.1: clear the dedup flag from a fact (the "Keep" action on a flagged duplicate).
+  // Uses fact.id when available, otherwise falls back to the fact text as identifier.
+  clearDedupFlag: (nodeId: string, factId: string) =>
+    request<GraphNode>(
+      `/acervo/graph/nodes/${nodeId}/facts/${encodeURIComponent(factId)}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({ dedup_status: null }),
+      },
+    ),
+
+  deleteEdge: (edgeId: string) => {
+    // Old backend: parse synthesized ID "source-target-relation" into body params
+    // New backend (LadybugDB): will use DELETE /acervo/graph/edges/{id}
+    const parts = edgeId.split("-");
+    if (parts.length >= 3) {
+      const source = parts[0];
+      const target = parts[1];
+      const relation = parts.slice(2).join("-");
+      return request<{ deleted: boolean }>("/graph/edges", {
+        method: "DELETE",
+        body: JSON.stringify({ source, target, relation }),
+      });
+    }
+    // Fallback for real UUID-based IDs (new backend)
+    return request<{ deleted: boolean }>(`/acervo/graph/edges/${edgeId}`, {
+      method: "DELETE",
+    });
+  },
+
+  getOrphans: () =>
+    request<{ nodes: GraphNode[] }>("/acervo/graph/orphans"),
+
+  getValidationLog: () =>
+    request<{ entries: ValidationLogEntry[] }>("/acervo/graph/validation-log"),
+
+  approveValidation: (entryId: string) =>
+    request<{ updated: boolean }>(`/acervo/graph/validation-log/${entryId}/approve`, {
+      method: "POST",
+    }),
+
+  correctValidation: (entryId: string, data: { corrected_type: string; corrected_relation?: string }) =>
+    request<{ updated: boolean }>(`/acervo/graph/validation-log/${entryId}/correct`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+
+  discardValidation: (entryId: string) =>
+    request<{ updated: boolean }>(`/acervo/graph/validation-log/${entryId}/discard`, {
+      method: "POST",
+    }),
+
+  exportTraining: async () => {
+    const res = await fetch(`${BASE}/acervo/graph/export/training`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.detail ?? `HTTP ${res.status}`);
+    }
+    return res.blob();
+  },
 };
 
 // ── MCP ──

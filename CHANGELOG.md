@@ -1,5 +1,71 @@
 # Changelog
 
+## v0.6.0 (2026-04-09)
+
+### Interactive Graph Editor
+
+The Graph page is now a full interactive knowledge graph editor, connected to the new Acervo REST API (`/acervo/graph/*`).
+
+#### Visualization
+
+- **Node size by degree** — Nodes are sized proportionally to their connection count (6–24px) instead of fact count.
+- **Edge labels always visible** — Lowered render threshold so relation labels display at all zoom levels; edge labels rendered with dedicated font/color settings.
+- **Type and layer filters** — Dropdown filters in the toolbar to show only nodes of a specific type or layer.
+- **Merge mode highlight** — When marking a node for merge, it renders with an amber highlight and a banner prompts to select the second node.
+
+#### Curation
+
+- **Right-click context menu** — Right-click any node (Edit / Delete / Mark for merge) or edge (Edit relation / Delete) directly on the canvas.
+- **Inline node editing** — Edit label, type, layer, and description directly in the detail panel via `PATCH /acervo/graph/nodes/{id}`.
+- **Edge editing** — Change an edge's relation type via a dialog, using `PATCH /acervo/graph/edges/{id}`.
+- **Two-step merge flow** — Mark first node from context menu → banner appears → click second node → confirmation → `POST /acervo/graph/merge`.
+- **Create node dialog** — Manual node creation with label, type, layer, description, and initial facts.
+
+#### New Panels (bottom tabs)
+
+- **Validation Panel** — Shows the type-mapping validation log from `GET /acervo/graph/validation-log`. Each entry can be approved, corrected (with inline form for corrected type/relation), or discarded via dedicated backend endpoints. Pending count badge on the tab. Stateless in Studio — all actions persist on backend.
+- **Orphans Panel** — Lists nodes with no connections from `GET /acervo/graph/orphans`. Quick connect (inline search + relation picker) or delete per orphan. Simple word-overlap similarity suggestions ("Merge with X?" chips).
+- **Stats Panel** — Recharts-powered dashboard: type distribution donut, relation distribution horizontal bar, summary cards (nodes/edges/orphans), and cumulative growth timeline.
+- **Backend unavailability states** — Validation and Orphans panels show "backend endpoint not connected yet" instead of empty content when endpoints are not available.
+
+#### API Migration
+
+- All graph endpoints migrated from `/graph/*` to `/acervo/graph/*`.
+- `GraphEdge` now carries an `id` field; delete and patch operations use edge IDs.
+- `GraphStats` updated to new shape: `types_distribution`, `relations_distribution`, `orphan_count`.
+- New API methods: `updateEdge`, `getOrphans`, `getValidationLog`, `approveValidation`, `correctValidation`, `discardValidation`, `exportTraining`.
+- Merge endpoint updated to `{ source_id, target_id }` (removed alias parameter).
+
+#### Training Data Export
+
+- **Export Training button** in toolbar calls `POST /acervo/graph/export/training` and downloads a JSONL file. Format is compatible with `generate_s1_training.py` in acervo-models (conversation context + expected JSON output).
+
+#### Real-time Updates
+
+- `useWebSocket` now dispatches an `acervo:graph-updated` DOM CustomEvent when `conversation_indexed` events arrive.
+- New `useGraphEvents` hook in GraphPage listens for this event and triggers a graph reload.
+- Auto-refresh is skipped while the user is in edit mode to prevent data loss.
+- Manual refresh button in toolbar as fallback.
+
+#### Toolbar Enhancements
+
+- Replaced old stats badges with dedicated StatsBar and StatsPanel.
+- Added: type filter dropdown, layer filter dropdown, Create Node button, Refresh button, Export Training button.
+
+### Projects Page
+
+- **Clear Acervo Data button** — New danger zone action on the project detail page. Deletes the knowledge graph, topics, sessions, and all indexed data for the active project via `DELETE /plugins/acervo/data`. Requires confirmation dialog.
+
+### Files Added
+
+- `GraphContextMenu.tsx` — Floating right-click menu for canvas nodes/edges
+- `CreateNodeDialog.tsx` — Dialog for manual node creation
+- `EditEdgeDialog.tsx` — Dialog for editing edge relation
+- `ValidationPanel.tsx` — Validation log viewer with approve/correct/discard
+- `OrphansPanel.tsx` — Orphan node manager with connect/delete/similarity
+- `StatsPanel.tsx` — Recharts charts (type donut, relation bar, growth timeline)
+- `useGraphEvents.ts` — Hook for real-time graph update events
+
 ## v0.5.0 (2026-04-07)
 
 ### New Features

@@ -18,7 +18,7 @@ import {
   Folder,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { projectsApi, type Project, type FileStatusItem } from "@/lib/api";
+import { projectsApi, acervoApi, type Project, type FileStatusItem } from "@/lib/api";
 import { useIndexing } from "@/hooks/useIndexing";
 import { useCuration } from "@/hooks/useCuration";
 import { useSynthesis } from "@/hooks/useSynthesis";
@@ -153,6 +153,22 @@ export function ProjectsPage() {
     }
   }
 
+  async function handleClearData() {
+    const ok = await confirm({
+      title: "Clear Acervo data",
+      description: "This will delete the knowledge graph, topics, sessions, and all indexed data for the active project. This action cannot be undone.",
+      confirmLabel: "Clear data",
+      variant: "destructive",
+    });
+    if (!ok) return;
+    try {
+      await acervoApi.clearData();
+      await refreshProjects();
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Failed to clear data");
+    }
+  }
+
   if (projectsLoading && projects.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center h-full text-muted-foreground gap-3">
@@ -279,6 +295,7 @@ export function ProjectsPage() {
             onCurate={() => handleCurate(selectedProject.id)}
             onSynthesize={() => handleSynthesize(selectedProject.id)}
             onRemove={() => handleRemove(selectedProject.id)}
+            onClearData={handleClearData}
             onCheckStatus={async () => {
               setStatusMap((m) => ({ ...m, [selectedProject.id]: "checking" }));
               try {
@@ -329,6 +346,7 @@ function ProjectDetail({
   onCurate,
   onSynthesize,
   onRemove,
+  onClearData,
   onCheckStatus,
   onDescriptionSaved,
 }: {
@@ -349,6 +367,7 @@ function ProjectDetail({
   onSynthesize: () => void;
   onInit: () => void;
   onRemove: () => void;
+  onClearData: () => void;
   onCheckStatus: () => void;
   onDescriptionSaved: (desc: string) => void;
 }) {
@@ -512,6 +531,21 @@ function ProjectDetail({
             {/* Danger Zone */}
             <div className="border border-destructive/20 rounded-lg p-4 space-y-3">
               <h3 className="text-sm font-medium text-destructive">Danger Zone</h3>
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-xs font-medium">Clear Acervo data</p>
+                  <p className="text-[11px] text-muted-foreground">
+                    Delete the knowledge graph, topics, sessions, and all indexed data for this project.
+                  </p>
+                </div>
+                <button
+                  onClick={onClearData}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-destructive/30 text-destructive hover:bg-destructive/10 text-xs font-medium transition-colors cursor-pointer shrink-0"
+                >
+                  <Trash2 size={12} />
+                  Clear data
+                </button>
+              </div>
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-xs font-medium">Remove project</p>
